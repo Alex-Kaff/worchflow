@@ -1,131 +1,107 @@
-# Worchflow - LLM Reference
+# Worchflow Monorepo - LLM Reference
 
-## Overview
-Workflow orchestration system with step-based execution, automatic checkpointing, and type-safe event schemas. Built on Redis (queue) + MongoDB (persistence).
-
-## Core Concepts
-
-### Event Schema Pattern
-Define all events as a TypeScript type:
-```typescript
-type Events = {
-  'event-name': { data: { field: type } }
-}
+## Structure
+```
+worchflow/
+├── packages/worchflow/     # Core library (published to npm)
+├── apps/dashboard/         # Next.js dashboard
+└── docker-compose.yml      # Redis + MongoDB
 ```
 
-### Function Creation
+## Core Library (`packages/worchflow`)
+
+**Workflow orchestration**: Redis queue + MongoDB persistence + step-based execution with checkpointing.
+
+### Usage
 ```typescript
+type Events = { 'event-name': { data: { field: type } } }
+
 createFunction<Events, 'event-name'>(
   { id: 'event-name' },
   async ({ event, step }) => {
-    // event.data is typed from Events['event-name']['data']
-    const result = await step.run('Step title', async () => {
-      // Step logic - runs once, cached on retry
-      return value;
-    });
+    const result = await step.run('Step title', async () => value);
     return finalResult;
   }
 )
-```
 
-### Client (Event Submission)
-```typescript
 const client = new WorchflowClient<Events>({ redis, db });
-await client.send({
-  name: 'event-name',  // Validated against Events keys
-  data: { ... }        // Validated against Events[name]['data']
-});
+await client.send({ name: 'event-name', data: {...} });
+
+const worcher = new Worcher({ redis, db, concurrency: 5, logging: true }, [functions]);
+await worcher.start();
 ```
 
-### Worker (Event Processing)
+### Config
 ```typescript
-const worcher = new Worcher({ redis, db }, [function1, function2]);
-await worcher.start(); // Polls Redis, executes functions
-```
-
-## Step Execution
-- Steps identified by MD5 hash of title string
-- Completed steps cached in MongoDB
-- On retry: completed steps return cached value, failed/incomplete steps re-execute
-- Sequential execution only (no parallel steps)
-
-## Data Flow
-1. Client.send() → generates executionId → stores in MongoDB + Redis → queues to Redis
-2. Worcher polls Redis → BLPOP executionId (atomic, multi-worker safe) → loads from Redis
-3. Step.run() → checks memory cache → checks Redis → executes if not cached → saves to Redis + MongoDB
-4. Function completes → updates execution status in Redis + MongoDB
-5. On failure → updates status → re-queues executionId to Redis for immediate retry
-
-## Redis Data Structures
-```
-{queuePrefix}:queue                      → List (RPUSH to add, BLPOP to consume)
-{queuePrefix}:execution:{executionId}    → Hash (execution metadata)
-{queuePrefix}:steps:{executionId}        → Hash (stepId → JSON result)
-```
-
-Default `queuePrefix` is `worchflow`.
-
-## Type System
-
-### Key Types
-- `EventSchemaShape`: `Record<string, { data: any }>`
-- `SendEventPayload<Events>`: Union of all event shapes with name + data
-- `ExtractEventData<Events, Name>`: Extracts `Events[Name]['data']`
-- `FunctionContext<TData>`: `{ event: EventPayload<TData>, step: StepContext }`
-
-### Generic Constraints
-- `createFunction<TEvents, TEventName>` where `TEventName extends keyof TEvents`
-- `WorchflowClient<TEvents>` validates send() payload against TEvents
-- Function handlers receive typed `event.data` via `ExtractEventData<TEvents, TEventName>`
-
-## Architecture
-
-```
-src/
-├── client/WorchflowClient.ts   # Event submission, generic over Events type
-├── worker/Worcher.ts            # Event processing, function registry
-├── core/WorkchflowFunction.ts   # Function class, createFunction factory
-├── execution/Step.ts            # Step execution, checkpointing logic
-├── types/                       # Type definitions
-└── utils/hash.ts                # MD5 hashing for step IDs
-```
-
-## Dependencies
-- `ioredis`: Redis client (peer dep)
-- `mongodb`: MongoDB native driver (peer dep)
-- Users provide configured Redis + MongoDB instances
-
-## Configuration
-```typescript
-BaseWorchflowConfig {
-  redis: Redis;    // ioredis instance
-  db: Db;          // MongoDB database
-  queuePrefix?: string;  // Default: 'worchflow'
-}
-
-WorchflowClientConfig<TEvents> extends BaseWorchflowConfig {
-  events?: TEvents;  // Optional, used for type inference only
-}
-
-WorcherConfig extends BaseWorchflowConfig {
-  concurrency?: number;  // Default: 1, number of parallel executions
+{
+  redis: Redis,          // ioredis instance
+  db: Db,                // MongoDB database
+  queuePrefix?: string,  // default: 'worchflow'
+  logging?: boolean,     // default: false
+  concurrency?: number   // worker only, default: 1
 }
 ```
 
-## Initialization Pattern
-Both Client and Worcher:
-- Extend EventEmitter
-- Ping Redis + MongoDB on construction
-- Emit 'ready' when connected
-- Emit 'error' on failure
+### Architecture
+- Client: sends events → Redis queue + MongoDB
+- Worker: BLPOP from queue → executes functions with step checkpointing
+- Step: Redis-first cache (HGET/HSET) + MongoDB persistence
+- Each execution gets dedicated Redis connection (prevents BLPOP blocking)
 
-## Current Status
-- ✅ Type system implemented
-- ✅ Core classes scaffolded
-- ✅ Client.send() - generates executionId, stores in Redis + MongoDB, queues to Redis
-- ✅ Worcher.start() - polls Redis BLPOP, processes executions with configurable concurrency
-- ✅ Step.run() checkpointing - Redis-first cache with MongoDB persistence
-- ✅ Worker events - execution:start, execution:complete, execution:failed
-- ✅ Retry on failure - failed executions automatically re-queued
-- ✅ Graceful shutdown - Worcher.stop() waits for active executions
+### Redis Keys
+- `{prefix}:queue` → List of executionIds
+- `{prefix}:execution:{id}` → Hash with execution metadata
+- `{prefix}:steps:{id}` → Hash with stepId → cached result
+
+### MongoDB Collections
+- `executions`: { id, eventName, eventData, status, result, error, createdAt, updatedAt }
+- `steps`: { executionId, stepId, result, timestamp }
+
+### Events
+- `execution:start` → { executionId, eventName }
+- `execution:complete` → { executionId, result }
+- `execution:failed` → { executionId, error }
+
+### Retry
+Failed executions auto-retry immediately (re-queued to Redis).
+
+## Dashboard (`apps/dashboard`)
+
+Next.js app at `localhost:3000`:
+- **List executions** - filterable by status, auto-refreshes every 2s
+- **View details** - execution metadata, steps, results/errors (stops polling when complete)
+- **Send events** - manual event submission with JSON editor
+- **Retry failed** - re-queue failed executions
+- **Stats overview** - queued/completed/failed counts
+
+### Tech Stack
+- Next.js 16 App Router
+- TypeScript with strict types
+- TailwindCSS 4
+- Centralized API client (`lib/api.ts`)
+- Shared types (`lib/types.ts`)
+
+### API Routes
+- `GET /api/executions?status=&limit=&skip=` - list executions
+- `GET /api/executions/[id]` - execution details + steps
+- `POST /api/executions/[id]/retry` - retry execution
+- `GET /api/stats` - overview statistics
+- `POST /api/send` - send new event
+
+## Commands
+```bash
+pnpm install                 # Install all workspaces
+pnpm docker:up               # Start Redis + MongoDB
+pnpm docker:down             # Stop and remove containers
+pnpm build                   # Build all packages
+pnpm example                 # Run worchflow example (packages/worchflow)
+pnpm dev:dashboard           # Start dashboard (localhost:3000)
+```
+
+## Dev Notes
+- Separate Redis clients for Client/Worker to avoid BLPOP blocking
+- Worker creates dedicated Redis connection per execution for steps
+- Steps cached by MD5 hash of title
+- Multi-worker safe via atomic BLPOP
+- Dashboard stops polling completed/failed executions
 
