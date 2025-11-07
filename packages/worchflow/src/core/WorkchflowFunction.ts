@@ -13,6 +13,8 @@ export class WorkchflowFunction<
   TEventName extends keyof TEvents & string
 > implements IWorkchflowFunction<TEventName, ExtractEventData<TEvents, TEventName>, any> {
   public readonly id: TEventName;
+  public readonly retries: number;
+  public readonly retryDelay: number;
   private handler: FunctionHandler<ExtractEventData<TEvents, TEventName>, any>;
 
   constructor(
@@ -20,6 +22,8 @@ export class WorkchflowFunction<
     handler: FunctionHandler<ExtractEventData<TEvents, TEventName>, any>
   ) {
     this.id = config.id;
+    this.retries = config.retries ?? 0;
+    this.retryDelay = config.retryDelay ?? 0;
     this.handler = handler;
   }
 
@@ -30,6 +34,8 @@ export class WorkchflowFunction<
   toMetadata(): WorkchflowFunctionMetadata<TEventName> {
     return {
       id: this.id,
+      retries: this.retries,
+      retryDelay: this.retryDelay,
     };
   }
 }

@@ -50,6 +50,8 @@ export class Step implements StepContext {
       this.db.collection('steps').insertOne({
         executionId: this.executionId,
         stepId,
+        name: title,
+        status: 'completed',
         result,
         timestamp: Date.now(),
       }),

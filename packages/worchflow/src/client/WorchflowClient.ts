@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import type { WorchflowClientConfig, EventSchemaShape, SendEventPayload } from '../types';
+import { ensureIndexes } from '../utils/indexes';
 
 export class WorchflowClient<TEvents extends EventSchemaShape = EventSchemaShape> extends EventEmitter {
   private config: WorchflowClientConfig<TEvents>;
@@ -21,6 +22,7 @@ export class WorchflowClient<TEvents extends EventSchemaShape = EventSchemaShape
       await Promise.all([
         this.config.redis.ping(),
         this.config.db.admin().ping(),
+        ensureIndexes(this.config.db, this.config.logging ?? false),
       ]);
 
       this.isReady = true;
@@ -43,6 +45,7 @@ export class WorchflowClient<TEvents extends EventSchemaShape = EventSchemaShape
       eventName: String(event.name),
       eventData: JSON.stringify(event.data),
       status: 'queued',
+      attemptCount: 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -60,5 +63,41 @@ export class WorchflowClient<TEvents extends EventSchemaShape = EventSchemaShape
     await this.config.redis.rpush(this.queueName, executionId);
 
     return executionId;
+  }
+
+  async retry(executionId: string): Promise<void> {
+    if (!this.isReady) {
+      throw new Error('Client not ready. Wait for "ready" event.');
+    }
+
+    // Reset attempt count for manual retry
+    await Promise.all([
+      this.config.redis.hset(
+        `${this.queuePrefix}:execution:${executionId}`,
+        'attemptCount',
+        '0',
+        'status',
+        'queued',
+        'updatedAt',
+        String(Date.now())
+      ),
+      this.config.db.collection('executions').updateOne(
+        { id: executionId },
+        {
+          $set: {
+            attemptCount: 0,
+            status: 'queued',
+            updatedAt: Date.now(),
+          },
+          $unset: {
+            error: '',
+            errorStack: '',
+          },
+        }
+      ),
+    ]);
+
+    // Re-queue the execution
+    await this.config.redis.rpush(this.queueName, executionId);
   }
 }

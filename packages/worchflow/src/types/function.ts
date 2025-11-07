@@ -16,6 +16,8 @@ export interface FunctionContext<TData = any> {
 
 export interface FunctionConfig<TEventName extends string = string> {
   id: TEventName;
+  retries?: number; // Number of retry attempts on failure (default: 0 = no retries)
+  retryDelay?: number; // Delay in ms before retry (default: 0 = immediate)
 }
 
 export type FunctionHandler<TData = any, TReturn = any> = (
@@ -24,6 +26,8 @@ export type FunctionHandler<TData = any, TReturn = any> = (
 
 export interface WorkchflowFunctionMetadata<TEventName extends string = string> {
   id: TEventName;
+  retries?: number;
+  retryDelay?: number;
 }
 
 export interface WorkchflowFunction<
@@ -32,6 +36,8 @@ export interface WorkchflowFunction<
   TReturn = any
 > {
   readonly id: TEventName;
+  readonly retries: number;
+  readonly retryDelay: number;
   execute(context: FunctionContext<TData>): Promise<TReturn>;
   toMetadata(): WorkchflowFunctionMetadata<TEventName>;
 }

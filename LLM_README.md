@@ -47,6 +47,7 @@ await worcher.start();
 - Worker: BLPOP from queue → executes functions with step checkpointing
 - Step: Redis-first cache (HGET/HSET) + MongoDB persistence
 - Each execution gets dedicated Redis connection (prevents BLPOP blocking)
+- **MongoDB Indexes**: Automatically created on initialization for optimal query performance
 
 ### Redis Keys
 - `{prefix}:queue` → List of executionIds
@@ -63,7 +64,11 @@ await worcher.start();
 - `execution:failed` → { executionId, error }
 
 ### Retry
-Failed executions auto-retry immediately (re-queued to Redis).
+- Configurable per-function via `retries` and `retryDelay` options
+- `retries: 2` means 3 total attempts (initial + 2 retries)
+- Automatic retry on failure (re-queued to Redis) if within retry limit
+- Manual retry via `client.retry(executionId)` resets attempt count
+- Status during retries: `'retrying'` (auto) or `'failed'` (exceeded limit)
 
 ## Dashboard (`apps/dashboard`)
 
@@ -105,3 +110,86 @@ pnpm dev:dashboard           # Start dashboard (localhost:3000)
 - Multi-worker safe via atomic BLPOP
 - Dashboard stops polling completed/failed executions
 
+## Testing & Architecture Insights
+
+### Test Infrastructure
+Located in `packages/worchflow/tests/`. Uses Vitest with:
+- Isolated test contexts (unique Redis prefixes per test)
+- Helper functions: `createTestContext()`, `waitForExecution()`, `startWorcher()`, `getSteps()`
+- Comprehensive console logging throughout tests (prefixed with `[TEST]`, `[EVENT]`, `[FUNCTION]`)
+- Optional worker logging via `logging: true` in worker config
+
+### Test Helper Functions
+
+**`createTestContext()`**
+- Creates isolated Redis + MongoDB connections per test
+- Generates unique `queuePrefix` (e.g., `test:a1b2c3d4`)
+- Returns `{ redis, redisWorker, db, queuePrefix, cleanup }`
+- Call in `beforeEach` for test isolation
+
+**`startWorcher(worcher)`**
+- ⚠️ CRITICAL: Waits for `ready` event before starting worcher
+- Pattern: `await startWorcher(worcher)` - NOT `await worcher.start()`
+- Handles async startup properly (waits 200ms for stabilization)
+- Common mistake: calling `worcher.on('ready', ...)` AND `startWorcher()` causes hang (ready fires only once!)
+
+**`waitForExecution(db, executionId, status, timeout=5000)`**
+- Polls MongoDB every 100ms for execution status
+- Throws error if timeout exceeded
+- Always use MongoDB, not Redis (source of truth)
+
+**`getSteps(db, executionId)`**
+- Fetches all steps for an execution from MongoDB
+- Returns array of step documents
+
+### Key Behavioral Patterns
+
+**Async Update Timing:**
+- MongoDB updates complete FIRST (synchronously awaited)
+- Redis updates complete AFTER (async, but reliable)
+- MongoDB is source of truth; Redis is cache
+- Tests should wait for MongoDB status, not Redis
+
+**Lifecycle Events:**
+- `execution:start` fires immediately when execution begins
+- `execution:complete` fires BEFORE Redis/MongoDB updates finish (intentional for responsiveness)
+- `execution:failed` fires immediately on error
+- Events are reliable for real-time monitoring
+- ⚠️ `ready` event fires ONCE on worcher start - don't double-listen!
+
+**Concurrency Behavior:**
+- Worker spawns N threads (configurable via `concurrency`)
+- Each thread gets its own Redis connection (prevents blocking)
+- All threads poll queue via atomic BLPOP
+- Executions process truly in parallel
+- ⚠️ Critical: Shared Redis connection across threads causes serialization!
+- Architecture: ONE Worcher with high concurrency (recommended) OR multiple Worchers for different queues/priorities
+
+**Step Checkpointing:**
+- Steps cached in-memory (Map), Redis (HSET), and MongoDB (document)
+- Cache lookup order: Memory → Redis → execute
+- On retry/resume, completed steps never re-execute
+- Step ID = MD5 hash of step title (collisions theoretically possible but unlikely)
+
+### Testing Tips & Common Pitfalls
+
+**✅ Do This:**
+1. Use `waitForExecution(db, id, status, timeout)` not Redis checks
+2. Call `await startWorcher(worcher)` ONCE per test
+3. Register event handlers BEFORE calling `startWorcher()`
+4. Always call `worcher.stop()` in test cleanup (`afterEach`)
+5. Use unique `queuePrefix` per test for isolation (handled by `createTestContext()`)
+6. Check console logs prefixed with `[TEST]`, `[EVENT]`, `[FUNCTION]` for debugging
+
+**❌ Don't Do This:**
+1. ❌ `await worcher.on('ready', ...).then(() => startWorcher(worcher))` - causes hang!
+2. ❌ `await worcher.start()` directly in tests - use helper function
+3. ❌ Checking Redis for execution status - use MongoDB
+4. ❌ Sharing Redis clients between tests - create fresh context
+5. ❌ Assuming immediate updates - use polling helpers
+
+**Common Issues:**
+- **Test hangs**: Likely waiting for `ready` event twice (once manually, once in helper)
+- **Execution not found**: Check `queuePrefix` matches between client/worker
+- **Timeout errors**: Increase timeout in `waitForExecution()` for complex workflows
+- **Cross-test pollution**: Ensure `afterEach` cleanup runs properly
