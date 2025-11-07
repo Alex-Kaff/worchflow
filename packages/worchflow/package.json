@@ -14,7 +14,11 @@
     "example": "./run-example.sh",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
-    "docker:restart": "docker compose restart"
+    "docker:restart": "docker compose restart",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [],
   "author": "",
@@ -27,9 +31,11 @@
     "mongodb": "^6.0.0"
   },
   "devDependencies": {
+    "@vitest/ui": "^4.0.7",
     "ioredis": "^5.4.1",
     "mongodb": "^6.10.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.7"
   },
   "engines": {
     "node": ">=16.0.0"
