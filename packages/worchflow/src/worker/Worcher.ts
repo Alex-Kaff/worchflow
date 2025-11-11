@@ -1,8 +1,10 @@
 import { EventEmitter } from 'events';
 import { Redis } from 'ioredis';
-import type { WorcherConfig, WorkchflowFunction } from '../types';
+import type { ExecutionData, FunctionContext, WorcherConfig, WorkchflowFunction, QueueItem } from '../types';
 import { Step } from '../execution/Step';
 import { ensureIndexes } from '../utils/indexes';
+import { getExecutionFromRedis, updateExecutionInRedis, popFromQueue, saveExecutionToRedis, pushToQueue } from '../utils/redis';
+import { updateExecutionInMongo, getOrphanedExecutions } from '../utils/mongo';
 
 export class Worcher extends EventEmitter {
   private config: WorcherConfig;
@@ -14,9 +16,11 @@ export class Worcher extends EventEmitter {
   private concurrency: number;
   private activeExecutions: number = 0;
   private logging: boolean;
+  private instanceId: string;
 
   constructor(config: WorcherConfig, functions: WorkchflowFunction<any, any>[] = []) {
     super();
+    this.instanceId = Math.random().toString(36).substring(2, 6);
     this.config = config;
     this.queuePrefix = config.queuePrefix || 'worchflow';
     this.queueName = `${this.queuePrefix}:queue`;
@@ -56,43 +60,99 @@ export class Worcher extends EventEmitter {
       console.log(`[Worcher] Starting ${this.concurrency} worker threads...`);
     }
 
+    await this.recoverOrphanedExecutions();
+
     // Spawn N concurrent workers to process queue
     // Each worker gets its own Redis connection to avoid blocking
-    const workers = Array.from({ length: this.concurrency }, (_, i) => {
-      const workerRedis = new Redis(this.config.redis.options);
+    const workers: Promise<void>[] = Array.from({ length: this.concurrency }, (_, i) => {
+      const workerRedis: Redis = this.config.redis.duplicate();
       return this.processQueue(workerRedis, i);
     });
     
     await Promise.all(workers);
   }
 
-  private async processQueue(workerRedis: any, workerId: number): Promise<void> {
-    if (this.logging) {
-      console.log(`[Worcher] Worker #${workerId} started, polling queue: ${this.queueName}`);
+  // Find executions stuck in 'processing' or 'retrying' status and recover
+  private async recoverOrphanedExecutions(): Promise<void> {
+    try {
+      const orphanedExecutions = await getOrphanedExecutions(this.config.db);
+      
+      if (orphanedExecutions.length > 0) {
+        if (this.logging) {
+          console.log(`[Worcher] Found ${orphanedExecutions.length} orphaned execution(s), re-queueing...`);
+        }
+        
+        const now = Date.now();
+        for (const execution of orphanedExecutions) {
+          const restoredExecution = {
+            ...execution,
+            status: 'queued' as const,
+            updatedAt: now,
+          };
+          
+          await Promise.all([
+            saveExecutionToRedis(this.config.redis, this.queuePrefix, restoredExecution),
+            updateExecutionInMongo(this.config.db, execution.id, {
+              status: 'queued',
+              updatedAt: now,
+            }),
+          ]);
+          await pushToQueue(this.config.redis, this.queuePrefix, execution.id);
+          
+          if (this.logging) {
+            console.log(`[Worcher] Recovered execution: ${execution.id.slice(0, 8)}... (${execution.eventName}, was: ${execution.status})`);
+          }
+        }
+      } else if (this.logging) {
+        console.log(`[Worcher] No orphaned executions found`);
+      }
+    } catch (error) {
+      if (this.logging) {
+        console.error(`[Worcher] Error recovering orphaned executions:`, error);
+      }
+      this.emit('error', error);
     }
+  }
+
+  private async processQueue(workerRedis: Redis, workerId: number): Promise<void> {
+    if (this.logging) {
+      console.log(`[Worcher:${this.instanceId}] Worker #${workerId} started, polling queue: ${this.queueName}`);
+    }
+    
+    const activePromises: Set<Promise<void>> = new Set();
+    
     while (this.isRunning) {
       try {
-        // BLPOP is atomic - only one worker gets each executionId
-        const result = await workerRedis.blpop(this.queueName, 5);
+        const queueItem: QueueItem | null = await popFromQueue(workerRedis, this.queueName, 5);
 
-        if (!result) {
+        if (!queueItem) {
+          // No work available, check if we should exit
+          if (!this.isRunning) {
+            if (this.logging) {
+              console.log(`[Worcher:${this.instanceId}] Worker #${workerId} exiting: isRunning=false, no pending retries`);
+            }
+            break;
+          }
           continue;
         }
 
-        const [, executionId] = result;
+        const executionId = queueItem.executionId;
         this.activeExecutions++;
         
         if (this.logging) {
-          console.log(`[Worcher] Worker #${workerId} picked up execution: ${executionId.slice(0, 8)}... (active: ${this.activeExecutions})`);
+          console.log(`[Worcher] Worker #${workerId} picked up execution: ${executionId.slice(0, 8)}... (active: ${this.activeExecutions}`);
         }
 
         // Process execution without blocking queue polling
-        this.processExecution(executionId, workerRedis).finally(() => {
+        const executionPromise = this.processExecution(executionId, workerRedis).finally(() => {
           this.activeExecutions--;
+          activePromises.delete(executionPromise);
           if (this.logging) {
-            console.log(`[Worcher] Worker #${workerId} finished execution: ${executionId.slice(0, 8)}... (active: ${this.activeExecutions})`);
+            console.log(`[Worcher] Worker #${workerId} finished execution: ${executionId.slice(0, 8)}... (active: ${this.activeExecutions}`);
           }
         });
+        
+        activePromises.add(executionPromise);
       } catch (error) {
         this.emit('error', error);
         if (this.logging) {
@@ -101,7 +161,14 @@ export class Worcher extends EventEmitter {
       }
     }
     
-    // Clean up worker's Redis connection
+    // Wait for all active executions on this worker to complete before disconnecting
+    if (activePromises.size > 0) {
+      if (this.logging) {
+        console.log(`[Worcher] Worker #${workerId} waiting for ${activePromises.size} active executions to complete...`);
+      }
+      await Promise.all(Array.from(activePromises));
+    }
+    
     workerRedis.disconnect();
     
     if (this.logging) {
@@ -109,44 +176,87 @@ export class Worcher extends EventEmitter {
     }
   }
 
-  private async processExecution(executionId: string, workerRedis: any): Promise<void> {
+  private async processExecution(executionId: string, workerRedis: Redis): Promise<void> {
+    let stepRedis: Redis | null = null;
+    
     try {
-      // Load execution metadata from Redis (using worker's dedicated connection)
-      const executionData = await workerRedis.hgetall(
-        `${this.queuePrefix}:execution:${executionId}`
+      const executionData: ExecutionData = await getExecutionFromRedis(
+        this.config.redis,
+        this.queuePrefix,
+        executionId
       );
 
-      if (!executionData || !executionData.eventName) {
-        throw new Error(`Execution ${executionId} not found in Redis`);
+      if (this.logging) {
+        console.log(`[Worcher] Loaded execution data for ${executionId.slice(0, 8)}:`, {
+          eventName: executionData?.eventName,
+          eventData: executionData?.eventData,
+          eventDataLength: executionData?.eventData?.length,
+          attemptCount: executionData?.attemptCount
+        });
       }
 
-      const eventName = executionData.eventName;
-      const eventData = JSON.parse(executionData.eventData);
-      const attemptCount = parseInt(executionData.attemptCount || '0', 10);
+      if (!executionData || !executionData.eventName || !executionData.eventData || !executionData.createdAt) {
+        if (this.logging) {
+          console.error(`[Worcher] Missing execution data:`, {
+            hasData: !!executionData,
+            eventName: executionData?.eventName,
+            hasEventData: !!executionData?.eventData,
+            eventDataLength: executionData?.eventData?.length,
+            createdAt: executionData?.createdAt
+          });
+        }
+        throw new Error(`Execution ${executionId} not found in Redis or missing required fields`);
+      }
 
-      const workflowFunction = this.functionMap.get(eventName);
+      const eventName: string = executionData.eventName;
+      let eventData: any;
+      try {
+        eventData = JSON.parse(executionData.eventData);
+      } catch (parseError) {
+        if (this.logging) {
+          console.error(`[Worcher] Failed to parse eventData:`, {
+            eventData: executionData.eventData,
+            error: parseError instanceof Error ? parseError.message : String(parseError)
+          });
+        }
+        throw parseError;
+      }
+      const attemptCount: number = parseInt(executionData.attemptCount || '0', 10);
+
+      const workflowFunction: WorkchflowFunction<any, any> | undefined = this.functionMap.get(eventName);
       if (!workflowFunction) {
         throw new Error(`No function registered for event: ${eventName}`);
       }
 
       if (this.logging) {
-        console.log(`[Worcher] Started: ${eventName} (${executionId.slice(0, 8)}...) [attempt ${attemptCount + 1}]`);
+        console.log(`[Worcher] Started: ${eventName} (${executionId.slice(0, 8)}...) [attempt ${attemptCount}]`);
       }
 
-      this.emit('execution:start', { executionId, eventName, attemptCount: attemptCount + 1 });
+      const startTime = Date.now();
+      await Promise.all([
+        updateExecutionInRedis(this.config.redis, this.queuePrefix, executionId, {
+          status: 'processing',
+          updatedAt: startTime,
+        }),
+        updateExecutionInMongo(this.config.db, executionId, {
+          status: 'processing',
+          updatedAt: startTime,
+        }),
+      ]);
 
-      // Create dedicated Redis connection for this execution's steps
+      this.emit('execution:start', { executionId, eventName, attemptCount });
+
       // This prevents BLPOP from blocking step operations
-      const stepRedis = new Redis(this.config.redis.options);
+      stepRedis = this.config.redis.duplicate();
 
-      const step = new Step(
+      const step: Step = new Step(
         executionId,
         stepRedis,
         this.config.db,
         this.queuePrefix
       );
 
-      const context = {
+      const context: FunctionContext = {
         event: {
           name: eventName,
           data: eventData,
@@ -156,44 +266,34 @@ export class Worcher extends EventEmitter {
         step,
       };
 
-      const result = await workflowFunction.execute(context);
+      const result: any = await workflowFunction.execute(context);
 
-      // Close the dedicated connection
-      stepRedis.disconnect();
-
-      // Mark execution as completed in Redis and MongoDB
       if (this.logging) {
         console.log(`[Worcher] Updating execution ${executionId.slice(0, 8)}... to completed...`);
       }
       
-      const updatePromise = Promise.all([
-        this.config.redis.hset(
-          `${this.queuePrefix}:execution:${executionId}`,
-          'status',
-          'completed',
-          'result',
-          JSON.stringify(result),
-          'updatedAt',
-          String(Date.now())
-        ).then((redisResult) => {
+      const now: number = Date.now();
+      const updatePromise: Promise<[void, void]> = Promise.all([
+        updateExecutionInRedis(this.config.redis, this.queuePrefix, executionId, {
+          status: 'completed',
+          result,
+          attemptCount,
+          updatedAt: now,
+        }).then(() => {
           if (this.logging) {
-            console.log(`[Worcher] Redis hset result: ${redisResult}, key: ${this.queuePrefix}:execution:${executionId.slice(0, 8)}...`);
+            console.log(`[Worcher] Redis update complete for execution: ${executionId.slice(0, 8)}...`);
           }
         }).catch((err) => {
           console.error(`[Worcher] Redis update FAILED:`, err);
         }),
-        this.config.db.collection('executions').updateOne(
-          { id: executionId },
-          {
-            $set: {
-              status: 'completed',
-              result,
-              updatedAt: Date.now(),
-            },
-          }
-        ).then((mongoResult) => {
+        updateExecutionInMongo(this.config.db, executionId, {
+          status: 'completed',
+          result,
+          attemptCount,
+          updatedAt: now,
+        }).then(() => {
           if (this.logging) {
-            console.log(`[Worcher] MongoDB update result:`, mongoResult.modifiedCount);
+            console.log(`[Worcher] MongoDB update complete for execution: ${executionId.slice(0, 8)}...`);
           }
         }).catch((err) => {
           console.error(`[Worcher] MongoDB update FAILED:`, err);
@@ -203,81 +303,82 @@ export class Worcher extends EventEmitter {
       if (this.logging) {
         console.log(`[Worcher] Completed: ${eventName} (${executionId.slice(0, 8)}...)`);
       }
-
-      this.emit('execution:complete', { executionId, result });
       
       await updatePromise;
+      
+      this.emit('execution:complete', { executionId, result });
+      this.emit('execution:updated', { executionId, status: 'completed', result });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const errorStack = error instanceof Error ? error.stack : undefined;
+      const errorMessage: string = error instanceof Error ? error.message : String(error);
+      const errorStack: string | undefined = error instanceof Error ? error.stack : undefined;
 
       if (this.logging) {
         console.error(`[Worcher] Failed: ${executionId.slice(0, 8)}... - ${errorMessage}`);
       }
 
-      // Load execution data to check retry count
-      const executionData = await workerRedis.hgetall(
-        `${this.queuePrefix}:execution:${executionId}`
+      const executionData: ExecutionData = await getExecutionFromRedis(
+        this.config.redis,
+        this.queuePrefix,
+        executionId
       );
-      const eventName = executionData?.eventName;
-      const attemptCount = parseInt(executionData?.attemptCount || '0', 10);
+      const eventName: string | undefined = executionData?.eventName;
+      const attemptCount: number = parseInt(executionData?.attemptCount || '0', 10);
       
-      const workflowFunction = eventName ? this.functionMap.get(eventName) : null;
-      const maxRetries = workflowFunction?.retries ?? 0;
-      const retryDelay = workflowFunction?.retryDelay ?? 0;
-      const shouldRetry = attemptCount < maxRetries;
+      const workflowFunction: WorkchflowFunction<any, any> | null | undefined = eventName ? this.functionMap.get(eventName) : null;
+      const maxRetries: number = workflowFunction?.retries ?? 0;
+      const retryDelay: number = workflowFunction?.retryDelay ?? 0;
+      const shouldRetry: boolean = attemptCount < maxRetries;
 
       if (this.logging) {
         console.log(`[Worcher] Retry status: attempt ${attemptCount + 1}/${maxRetries + 1}, shouldRetry: ${shouldRetry}`);
       }
 
-      // Mark execution as failed in Redis and MongoDB
+      const now: number = Date.now();
       await Promise.all([
-        workerRedis.hset(
-          `${this.queuePrefix}:execution:${executionId}`,
-          'status',
-          shouldRetry ? 'retrying' : 'failed',
-          'error',
-          errorMessage,
-          'attemptCount',
-          String(attemptCount + 1),
-          'updatedAt',
-          String(Date.now())
-        ),
-        this.config.db.collection('executions').updateOne(
-          { id: executionId },
-          {
-            $set: {
-              status: shouldRetry ? 'retrying' : 'failed',
-              error: errorMessage,
-              errorStack,
-              attemptCount: attemptCount + 1,
-              updatedAt: Date.now(),
-            },
-          }
-        ),
+        updateExecutionInRedis(this.config.redis, this.queuePrefix, executionId, {
+          status: shouldRetry ? 'retrying' : 'failed',
+          error: errorMessage,
+          attemptCount: attemptCount + 1,
+          updatedAt: now,
+        }),
+        updateExecutionInMongo(this.config.db, executionId, {
+          status: shouldRetry ? 'retrying' : 'failed',
+          error: errorMessage,
+          errorStack,
+          attemptCount: attemptCount + 1,
+          updatedAt: now,
+        }),
       ]);
 
       this.emit('execution:failed', { executionId, error: errorMessage, attemptCount: attemptCount + 1, willRetry: shouldRetry });
+      this.emit('execution:updated', { executionId, status: shouldRetry ? 'retrying' : 'failed', error: errorMessage, attemptCount: attemptCount + 1 });
 
-      // Re-queue for retry if within retry limit
       if (shouldRetry && this.isRunning) { // Only retry if worker is still running
+        
+        if (this.logging) {
+          console.log(`[Worcher] Queueing ${executionId.slice(0, 8)}... for retry`);
+        }
+        
         if (retryDelay > 0) {
-          // Schedule retry with delay
           setTimeout(async () => {
-            if (!this.isRunning) return; // Double-check before retry
-            await this.config.redis.rpush(this.queueName, executionId);
+            if (!this.isRunning) {
+              return;
+            }
+            await pushToQueue(this.config.redis, this.queuePrefix, executionId);
             if (this.logging) {
               console.log(`[Worcher] Retrying ${executionId.slice(0, 8)}... after ${retryDelay}ms delay`);
             }
           }, retryDelay);
         } else {
-          // Immediate retry
-          await this.config.redis.rpush(this.queueName, executionId);
+          await pushToQueue(this.config.redis, this.queuePrefix, executionId);
           if (this.logging) {
             console.log(`[Worcher] Retrying ${executionId.slice(0, 8)}... immediately`);
           }
         }
+      }
+    } finally {
+      if (stepRedis) {
+        stepRedis.disconnect();
       }
     }
   }
@@ -286,11 +387,22 @@ export class Worcher extends EventEmitter {
     if (!this.isRunning) {
       throw new Error('Worcher not running.');
     }
+    
+    if (this.logging) {
+      console.log(`[Worcher:${this.instanceId}] Stop called: activeExecutions=${this.activeExecutions}`);
+    }
+    
     this.isRunning = false;
 
-    // Wait for all active executions to complete before stopping
     while (this.activeExecutions > 0) {
+      if (this.logging) {
+        console.log(`[Worcher] Waiting for ${this.activeExecutions} active executions...`);
+      }
       await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    if (this.logging) {
+      console.log(`[Worcher] Stop complete: all executions and retries finished`);
     }
   }
 

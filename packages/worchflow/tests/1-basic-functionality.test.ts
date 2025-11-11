@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { WorchflowClient, Worcher, createFunction } from '../src';
-import { createTestContext, waitForExecution, getSteps, sleep, TestContext, startWorcher } from './helpers/test-setup';
+import { createTestContext, waitForExecution, waitForExecutionEvent, getSteps, sleep, TestContext, startWorcher } from './helpers/test-setup';
 import {
   simpleFunction,
   counterFunction,
@@ -251,11 +251,9 @@ describe('Basic Functionality Tests', () => {
       console.log(`[TEST] Event sent: ${executionId}`);
 
       console.log('[TEST] Waiting for execution...');
-      await waitForExecution(ctx.db, executionId, 'completed');
+      const { status } = await waitForExecutionEvent(worcher, executionId, ctx.db);
       console.log('[TEST] Execution completed');
-
-      console.log('[TEST] Allowing time for Redis update propagation...');
-      await sleep(200);
+      expect(status).toBe('completed');
 
       console.log('[TEST] Checking MongoDB...');
       const mongoExecution = await ctx.db.collection('executions').findOne({ id: executionId });
@@ -458,11 +456,9 @@ describe('Basic Functionality Tests', () => {
       console.log(`[TEST] Event sent: ${executionId}`);
 
       console.log('[TEST] Waiting for execution...');
-      await waitForExecution(ctx.db, executionId, 'completed');
+      const { status } = await waitForExecutionEvent(worcher, executionId, ctx.db);
       console.log('[TEST] Execution completed');
-
-      console.log('[TEST] Waiting for events to propagate...');
-      await sleep(500);
+      expect(status).toBe('completed');
 
       console.log(`[TEST] Received ${events.length} events:`, events.map(e => e.type));
       expect(events).toHaveLength(2);

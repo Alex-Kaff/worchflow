@@ -9,11 +9,13 @@ export interface TestContext {
   mongoClient: MongoClient;
   db: Db;
   queuePrefix: string;
+  dbName: string;
   cleanup: () => Promise<void>;
 }
 
 export async function createTestContext(): Promise<TestContext> {
   const queuePrefix = `test:${randomUUID().slice(0, 8)}`;
+  const dbName = `worchflow_test_${queuePrefix.replace(':', '_')}`;
   
   const redis = new Redis({
     host: 'localhost',
@@ -21,11 +23,7 @@ export async function createTestContext(): Promise<TestContext> {
     lazyConnect: true,
   });
   
-  const redisWorker = new Redis({
-    host: 'localhost',
-    port: 6379,
-    lazyConnect: true,
-  });
+  const redisWorker = redis.duplicate();
   
   const mongoClient = new MongoClient('mongodb://localhost:27017');
   
@@ -35,7 +33,7 @@ export async function createTestContext(): Promise<TestContext> {
     mongoClient.connect(),
   ]);
   
-  const db = mongoClient.db('worchflow_test');
+  const db = mongoClient.db(dbName);
   
   const cleanup = async () => {
     const pattern = `${queuePrefix}*`;
@@ -44,8 +42,8 @@ export async function createTestContext(): Promise<TestContext> {
       await redis.del(...keys);
     }
     
-    await db.collection('executions').deleteMany({});
-    await db.collection('steps').deleteMany({});
+    // Drop the entire test database to ensure complete isolation
+    await db.dropDatabase();
     
     redis.disconnect();
     redisWorker.disconnect();
@@ -58,6 +56,7 @@ export async function createTestContext(): Promise<TestContext> {
     mongoClient,
     db,
     queuePrefix,
+    dbName,
     cleanup,
   };
 }
@@ -85,6 +84,46 @@ export async function waitForExecution(
   }
   
   throw new Error(`Execution ${executionId} did not reach status ${status} within ${timeoutMs}ms`);
+}
+
+export async function waitForExecutionEvent(
+  worcher: Worcher,
+  executionId: string,
+  db: Db,
+  timeoutMs: number = 5000
+): Promise<{ status: 'completed' | 'failed' | 'retrying'; execution: any }> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(async () => {
+      cleanup();
+      
+      const execution = await db.collection('executions').findOne({ id: executionId });
+      const steps = await db.collection('steps').find({ executionId }).toArray();
+      
+      console.error(`\n[TIMEOUT] Execution ${executionId} did not complete within ${timeoutMs}ms`);
+      console.error('[TIMEOUT] Execution state:', JSON.stringify(execution, null, 2));
+      console.error('[TIMEOUT] Steps:', JSON.stringify(steps, null, 2));
+      
+      reject(new Error(`Execution ${executionId} did not complete within ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    const onUpdated = async ({ executionId: id, status }: { executionId: string; status: 'completed' | 'failed' | 'retrying' }) => {
+      if (id === executionId) {
+        // Only resolve for final states (not retrying)
+        if (status === 'completed' || status === 'failed') {
+          cleanup();
+          const execution = await db.collection('executions').findOne({ id: executionId });
+          resolve({ status, execution });
+        }
+      }
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      worcher.off('execution:updated', onUpdated);
+    };
+
+    worcher.on('execution:updated', onUpdated);
+  });
 }
 
 export async function getSteps(db: Db, executionId: string): Promise<any[]> {

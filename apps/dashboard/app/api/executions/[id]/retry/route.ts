@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getRedis, queuePrefix } from '@/lib/db';
+import type { RetryResponse } from '@/lib/types';
 
 export async function POST(
   request: Request,
@@ -11,7 +12,12 @@ export async function POST(
 
     await redis.rpush(`${queuePrefix}:queue`, id);
 
-    return NextResponse.json({ success: true, executionId: id });
+    const response: RetryResponse = {
+      success: true,
+      executionId: id,
+    };
+
+    return NextResponse.json(response);
   } catch (err) {
     console.error('Failed to retry execution:', err);
     return NextResponse.json(

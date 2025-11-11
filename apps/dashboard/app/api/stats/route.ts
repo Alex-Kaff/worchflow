@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import type { StatsResponse } from '@/lib/types';
 
 export async function GET() {
   try {
@@ -19,12 +20,16 @@ export async function GET() {
       return acc;
     }, {} as Record<string, number>);
 
-    return NextResponse.json({
+    const response: StatsResponse = {
       queued: statusCounts.queued || 0,
+      processing: statusCounts.processing || 0,
       completed: statusCounts.completed || 0,
       failed: statusCounts.failed || 0,
+      retrying: statusCounts.retrying || 0,
       total: Object.values(statusCounts).reduce((a, b) => a + b, 0),
-    });
+    };
+
+    return NextResponse.json(response);
   } catch (err) {
     console.error('Failed to fetch stats:', err);
     return NextResponse.json(

@@ -1,19 +1,19 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
-import type { WorchflowClientConfig, EventSchemaShape, SendEventPayload } from '../types';
+import type { ExecutionRecord, WorchflowClientConfig, EventSchemaShape, SendEventPayload } from '../types';
 import { ensureIndexes } from '../utils/indexes';
+import { saveExecutionToRedis, updateExecutionInRedis, pushToQueue } from '../utils/redis';
+import { saveExecutionToMongo, updateExecutionInMongo } from '../utils/mongo';
 
 export class WorchflowClient<TEvents extends EventSchemaShape = EventSchemaShape> extends EventEmitter {
   private config: WorchflowClientConfig<TEvents>;
   private isReady: boolean = false;
   private queuePrefix: string;
-  private queueName: string;
 
   constructor(config: WorchflowClientConfig<TEvents>) {
     super();
     this.config = config;
     this.queuePrefix = config.queuePrefix || 'worchflow';
-    this.queueName = `${this.queuePrefix}:queue`;
     this.initialize();
   }
 
@@ -40,7 +40,7 @@ export class WorchflowClient<TEvents extends EventSchemaShape = EventSchemaShape
     const executionId = event.id || randomUUID();
     const now = Date.now();
 
-    const execution = {
+    const execution: ExecutionRecord = {
       id: executionId,
       eventName: String(event.name),
       eventData: JSON.stringify(event.data),
@@ -52,15 +52,10 @@ export class WorchflowClient<TEvents extends EventSchemaShape = EventSchemaShape
 
     // Write execution metadata to both Redis (fast access) and MongoDB (persistence)
     await Promise.all([
-      this.config.redis.hset(
-        `${this.queuePrefix}:execution:${executionId}`,
-        execution
-      ),
-      this.config.db.collection('executions').insertOne(execution),
+      saveExecutionToRedis(this.config.redis, this.queuePrefix, execution),
+      saveExecutionToMongo(this.config.db, execution),
     ]);
-
-    // Add executionId to queue for workers to process
-    await this.config.redis.rpush(this.queueName, executionId);
+    await pushToQueue(this.config.redis, this.queuePrefix, executionId);
 
     return executionId;
   }
@@ -71,33 +66,24 @@ export class WorchflowClient<TEvents extends EventSchemaShape = EventSchemaShape
     }
 
     // Reset attempt count for manual retry
+    const now: number = Date.now();
     await Promise.all([
-      this.config.redis.hset(
-        `${this.queuePrefix}:execution:${executionId}`,
-        'attemptCount',
-        '0',
-        'status',
-        'queued',
-        'updatedAt',
-        String(Date.now())
-      ),
-      this.config.db.collection('executions').updateOne(
-        { id: executionId },
+      updateExecutionInRedis(this.config.redis, this.queuePrefix, executionId, {
+        attemptCount: 0,
+        status: 'queued',
+        updatedAt: now,
+      }),
+      updateExecutionInMongo(
+        this.config.db,
+        executionId,
         {
-          $set: {
-            attemptCount: 0,
-            status: 'queued',
-            updatedAt: Date.now(),
-          },
-          $unset: {
-            error: '',
-            errorStack: '',
-          },
-        }
+          attemptCount: 0,
+          status: 'queued',
+          updatedAt: now,
+        },
+        ['error', 'errorStack']
       ),
     ]);
-
-    // Re-queue the execution
-    await this.config.redis.rpush(this.queueName, executionId);
+    await pushToQueue(this.config.redis, this.queuePrefix, executionId);
   }
 }

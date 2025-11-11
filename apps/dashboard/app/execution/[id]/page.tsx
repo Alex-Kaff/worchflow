@@ -33,7 +33,7 @@ export default function ExecutionPage({ params }: { params: Promise<{ id: string
         return;
       }
       fetchData();
-    }, 2000);
+    }, 1000);
     
     return () => clearInterval(interval);
   }, [fetchData, data?.execution.status]);
@@ -47,6 +47,8 @@ export default function ExecutionPage({ params }: { params: Promise<{ id: string
       case 'completed': return 'bg-green-100 text-green-800';
       case 'failed': return 'bg-red-100 text-red-800';
       case 'queued': return 'bg-yellow-100 text-yellow-800';
+      case 'processing': return 'bg-blue-100 text-blue-800';
+      case 'retrying': return 'bg-orange-100 text-orange-800';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
@@ -107,21 +109,42 @@ export default function ExecutionPage({ params }: { params: Promise<{ id: string
                 </h1>
                 <p className="text-sm text-gray-500 font-mono">{execution.id}</p>
               </div>
-              <span className={`px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full ${getStatusColor(execution.status)}`}>
-                {execution.status}
-              </span>
+              <div className="flex items-center gap-3">
+                {execution.attemptCount > 1 && (
+                  <span className="px-3 py-1 inline-flex items-center text-sm leading-5 font-semibold rounded-full bg-gray-100 text-gray-700">
+                    Attempt {execution.attemptCount}
+                  </span>
+                )}
+                <span className={`px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full ${getStatusColor(execution.status)}`}>
+                  {execution.status}
+                </span>
+              </div>
             </div>
           </div>
 
           <div className="px-6 py-4 space-y-4">
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Created</h3>
-              <p className="text-sm text-gray-900">{formatDate(execution.createdAt)}</p>
-            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <h3 className="text-sm font-medium text-gray-500 mb-1">Created</h3>
+                <p className="text-sm text-gray-900">{formatDate(execution.createdAt)}</p>
+              </div>
 
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Updated</h3>
-              <p className="text-sm text-gray-900">{formatDate(execution.updatedAt)}</p>
+              <div>
+                <h3 className="text-sm font-medium text-gray-500 mb-1">Updated</h3>
+                <p className="text-sm text-gray-900">{formatDate(execution.updatedAt)}</p>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-medium text-gray-500 mb-1">Attempts</h3>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm text-gray-900 font-semibold">{execution.attemptCount}</p>
+                  {execution.attemptCount > 1 && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+                      Retry
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
 
             <div>
@@ -131,7 +154,7 @@ export default function ExecutionPage({ params }: { params: Promise<{ id: string
               </pre>
             </div>
 
-            {execution.result && (
+            {execution.result !== undefined && (
               <div>
                 <h3 className="text-sm font-medium text-gray-500 mb-2">Result</h3>
                 <pre className="bg-green-50 p-4 rounded-md overflow-x-auto text-sm text-green-900">
@@ -142,7 +165,14 @@ export default function ExecutionPage({ params }: { params: Promise<{ id: string
 
             {execution.error && (
               <div>
-                <h3 className="text-sm font-medium text-gray-500 mb-2">Error</h3>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-medium text-gray-500">Error</h3>
+                  {execution.attemptCount > 0 && (
+                    <span className="text-xs text-gray-500">
+                      Failed on attempt {execution.attemptCount}
+                    </span>
+                  )}
+                </div>
                 <div className="bg-red-50 p-4 rounded-md">
                   <p className="text-sm text-red-900 font-medium mb-2">{execution.error}</p>
                   {execution.errorStack && (
@@ -151,6 +181,15 @@ export default function ExecutionPage({ params }: { params: Promise<{ id: string
                     </pre>
                   )}
                 </div>
+                {execution.status === 'retrying' && (
+                  <div className="mt-2 flex items-center gap-2 text-sm text-orange-600">
+                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span>Execution will be retried automatically...</span>
+                  </div>
+                )}
               </div>
             )}
 

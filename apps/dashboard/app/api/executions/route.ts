@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import type { ExecutionsResponse } from '@/lib/types';
+import type { ExecutionsResponse, Execution, ExecutionStatus } from '@/lib/types';
+import type { ExecutionRecord } from 'worchflow';
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const status = searchParams.get('status');
+    const status = searchParams.get('status') as ExecutionStatus | null;
     const limit = parseInt(searchParams.get('limit') || '50');
     const skip = parseInt(searchParams.get('skip') || '0');
 
@@ -14,27 +15,22 @@ export async function GET(request: Request) {
     const query = status ? { status } : {};
     
     const [executions, total] = await Promise.all([
-      db.collection('executions')
+      db.collection<ExecutionRecord>('executions')
         .find(query)
         .sort({ createdAt: -1 })
         .limit(limit)
         .skip(skip)
         .toArray(),
-      db.collection('executions').countDocuments(query),
+      db.collection<ExecutionRecord>('executions').countDocuments(query),
     ]);
 
     const response: ExecutionsResponse = {
       executions: executions.map(e => ({
-        id: e.id,
-        eventName: e.eventName,
-        eventData: e.eventData,
-        status: e.status,
-        createdAt: e.createdAt,
-        updatedAt: e.updatedAt,
-        result: e.result,
-        error: e.error,
-        errorStack: e.errorStack,
-      })),
+        ...e,
+        result: (e as any).result,
+        error: (e as any).error,
+        errorStack: (e as any).errorStack,
+      } as Execution)),
       total,
       limit,
       skip,

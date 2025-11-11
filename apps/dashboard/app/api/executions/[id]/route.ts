@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb, getRedis, queuePrefix } from '@/lib/db';
+import { getExecutionFromMongo, getStepsForExecution, getExecutionKey } from 'worchflow';
+import type { ExecutionDetails } from '@/lib/types';
 
 export async function GET(
   request: Request,
@@ -11,9 +13,9 @@ export async function GET(
     const redis = await getRedis();
 
     const [execution, steps, redisExecution] = await Promise.all([
-      db.collection('executions').findOne({ id }),
-      db.collection('steps').find({ executionId: id }).sort({ timestamp: 1 }).toArray(),
-      redis.hgetall(`${queuePrefix}:execution:${id}`),
+      getExecutionFromMongo(db, id),
+      getStepsForExecution(db, id),
+      redis.hgetall(getExecutionKey(queuePrefix, id)),
     ]);
 
     if (!execution) {
@@ -23,11 +25,18 @@ export async function GET(
       );
     }
 
-    return NextResponse.json({
-      execution,
+    const response: ExecutionDetails = {
+      execution: {
+        ...execution,
+        result: (execution as any).result,
+        error: (execution as any).error,
+        errorStack: (execution as any).errorStack,
+      },
       steps,
       redisExecution,
-    });
+    };
+
+    return NextResponse.json(response);
   } catch (err) {
     console.error('Failed to fetch execution details:', err);
     return NextResponse.json(

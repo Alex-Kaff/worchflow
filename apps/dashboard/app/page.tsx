@@ -53,6 +53,8 @@ export default function Home() {
       case 'completed': return 'bg-green-100 text-green-800';
       case 'failed': return 'bg-red-100 text-red-800';
       case 'queued': return 'bg-yellow-100 text-yellow-800';
+      case 'processing': return 'bg-blue-100 text-blue-800';
+      case 'retrying': return 'bg-orange-100 text-orange-800';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
@@ -97,7 +99,7 @@ export default function Home() {
         </div>
 
         {stats && (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
             <div className="bg-white rounded-lg shadow p-6">
               <div className="text-sm font-medium text-gray-600">Total</div>
               <div className="text-2xl font-bold text-gray-900">{stats.total}</div>
@@ -107,12 +109,20 @@ export default function Home() {
               <div className="text-2xl font-bold text-yellow-600">{stats.queued}</div>
             </div>
             <div className="bg-white rounded-lg shadow p-6">
+              <div className="text-sm font-medium text-gray-600">Processing</div>
+              <div className="text-2xl font-bold text-blue-600">{stats.processing}</div>
+            </div>
+            <div className="bg-white rounded-lg shadow p-6">
               <div className="text-sm font-medium text-gray-600">Completed</div>
               <div className="text-2xl font-bold text-green-600">{stats.completed}</div>
             </div>
             <div className="bg-white rounded-lg shadow p-6">
               <div className="text-sm font-medium text-gray-600">Failed</div>
               <div className="text-2xl font-bold text-red-600">{stats.failed}</div>
+            </div>
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="text-sm font-medium text-gray-600">Retrying</div>
+              <div className="text-2xl font-bold text-orange-600">{stats.retrying}</div>
             </div>
           </div>
         )}
@@ -141,6 +151,16 @@ export default function Home() {
                 Queued
               </button>
               <button
+                onClick={() => setFilter('processing')}
+                className={`px-4 py-2 rounded-md text-sm font-medium ${
+                  filter === 'processing' 
+                    ? 'bg-blue-100 text-blue-700' 
+                    : 'text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                Processing
+              </button>
+              <button
                 onClick={() => setFilter('completed')}
                 className={`px-4 py-2 rounded-md text-sm font-medium ${
                   filter === 'completed' 
@@ -159,6 +179,16 @@ export default function Home() {
                 }`}
               >
                 Failed
+              </button>
+              <button
+                onClick={() => setFilter('retrying')}
+                className={`px-4 py-2 rounded-md text-sm font-medium ${
+                  filter === 'retrying' 
+                    ? 'bg-blue-100 text-blue-700' 
+                    : 'text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                Retrying
               </button>
             </div>
             <Link

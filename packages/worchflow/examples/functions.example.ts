@@ -42,6 +42,10 @@ export type ReportGenerationData = {
   dateRange: { start: string; end: string };
 };
 
+export type MultiStepRetryData = {
+  taskName: string;
+};
+
 export type Events = {
   'hello-world': {
     data: HelloWorldData;
@@ -69,6 +73,9 @@ export type Events = {
   };
   'report-generation': {
     data: ReportGenerationData;
+  };
+  'multi-step-retry': {
+    data: MultiStepRetryData;
   };
 };
 
@@ -365,6 +372,41 @@ export const reportGeneration = createFunction<Events, 'report-generation'>(
       filename: report,
       dataPoints: data.rows,
       aggregates: processed.aggregates
+    };
+  }
+);
+
+export const multiStepRetry = createFunction<Events, 'multi-step-retry'>(
+  { id: 'multi-step-retry', retries: 3 },
+  async ({ event, step }) => {
+    await step.run('Initial step', async () => {
+      console.log(`Starting task: ${event.data.taskName}`);
+      await sleep(2000);
+      console.log('Initial step completed successfully');
+    });
+
+    const result = await step.run('Flaky step with retries', async (retryCount?: number) => {
+      console.log(`Attempt for flaky step...`);
+      await sleep(1000);
+      if (Math.random() < 0.2) {
+        console.log('Flaky step succeeded');
+        return { attempts: retryCount, status: 'success' };
+      } else {
+        throw new Error(`Failed on attempt ${retryCount ?? 0}`);
+      }
+    }
+  );
+
+    await step.run('Final step', async () => {
+      console.log('Executing final step...');
+      await sleep(500);
+      console.log('Workflow completed successfully');
+    });
+
+    return {
+      taskName: event.data.taskName,
+      totalAttempts: result.attempts,
+      status: 'completed'
     };
   }
 );

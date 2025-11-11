@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getRedis, getDb, queuePrefix } from '@/lib/db';
+import { saveExecutionToRedis, saveExecutionToMongo } from 'worchflow';
+import type { ExecutionRecord, ExecutionStatus } from 'worchflow';
+import type { SendEventResponse } from '@/lib/types';
 
 export async function POST(request: Request) {
   try {
@@ -19,26 +22,29 @@ export async function POST(request: Request) {
     const executionId = crypto.randomUUID();
     const now = Date.now();
 
-    const execution = {
+    const execution: ExecutionRecord = {
       id: executionId,
       eventName: name,
       eventData: JSON.stringify(data),
-      status: 'queued',
+      status: 'queued' as ExecutionStatus,
+      attemptCount: 0,
       createdAt: now,
       updatedAt: now,
     };
 
     await Promise.all([
-      redis.hset(`${queuePrefix}:execution:${executionId}`, execution),
-      db.collection('executions').insertOne(execution),
+      saveExecutionToRedis(redis, queuePrefix, execution),
+      saveExecutionToMongo(db, execution),
     ]);
 
     await redis.rpush(`${queuePrefix}:queue`, executionId);
 
-    return NextResponse.json({ 
-      success: true, 
+    const response: SendEventResponse = {
+      success: true,
       executionId,
-    });
+    };
+
+    return NextResponse.json(response);
   } catch (err) {
     console.error('Failed to send event:', err);
     return NextResponse.json(

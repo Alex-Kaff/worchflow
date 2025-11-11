@@ -6,7 +6,7 @@ export interface EventPayload<TData = any> {
 }
 
 export interface StepContext {
-  run<T>(title: string, fn: () => Promise<T>): Promise<T>;
+  run<TStepResult>(title: string, fn: () => Promise<TStepResult>): Promise<TStepResult>;
 }
 
 export interface FunctionContext<TData = any> {

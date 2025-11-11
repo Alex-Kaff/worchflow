@@ -1,27 +1,16 @@
-export type ExecutionStatus = 'queued' | 'completed' | 'failed';
+import type { ExecutionStatus, ExecutionRecord, StepRecord } from 'worchflow';
 
-export interface Execution {
-  id: string;
-  eventName: string;
-  eventData: string;
-  status: ExecutionStatus;
-  createdAt: number;
-  updatedAt: number;
+export type { ExecutionStatus, ExecutionRecord, StepRecord };
+
+export interface Execution extends ExecutionRecord {
   result?: unknown;
   error?: string;
   errorStack?: string;
 }
 
-export interface Step {
-  executionId: string;
-  stepId: string;
-  result: unknown;
-  timestamp: number;
-}
-
 export interface ExecutionDetails {
   execution: Execution;
-  steps: Step[];
+  steps: StepRecord[];
   redisExecution?: Record<string, string>;
 }
 
@@ -34,8 +23,10 @@ export interface ExecutionsResponse {
 
 export interface StatsResponse {
   queued: number;
+  processing: number;
   completed: number;
   failed: number;
+  retrying: number;
   total: number;
 }
 

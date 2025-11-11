@@ -1,18 +1,18 @@
-import type { Db } from 'mongodb';
+import type { Collection, Db, IndexSpecification, CreateIndexesOptions } from 'mongodb';
 
 export async function ensureIndexes(db: Db, logging: boolean = false): Promise<void> {
-  const log = (msg: string) => {
+  const log = (msg: string): void => {
     if (logging) {
       console.log(`[Worchflow] ${msg}`);
     }
   };
 
   const createIndexSafe = async (
-    collection: any,
-    spec: any,
-    options: any,
+    collection: Collection,
+    spec: IndexSpecification,
+    options: CreateIndexesOptions,
     description: string
-  ) => {
+  ): Promise<void> => {
     try {
       await collection.createIndex(spec, options);
       log(`✓ Created index: ${description}`);

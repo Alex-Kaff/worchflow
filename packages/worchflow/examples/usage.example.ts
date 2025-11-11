@@ -11,12 +11,13 @@ import {
     webhookRetry,
     dataValidation,
     reportGeneration,
+    multiStepRetry,
     Events 
 } from './functions.example';
 
 async function main() {
     const redisClient = new Redis();
-    const redisWorker = new Redis();
+    const redisWorker = redisClient.duplicate();
     const mongoClient = new MongoClient('mongodb://localhost:27017');
     await mongoClient.connect();
     const db = mongoClient.db('worchflow');
@@ -37,7 +38,8 @@ async function main() {
             imageResize,
             webhookRetry,
             dataValidation,
-            reportGeneration
+            reportGeneration,
+            multiStepRetry
         ]
     );
 
@@ -136,6 +138,13 @@ async function main() {
                 },
             });
         }
+
+        await client.send({
+            name: 'multi-step-retry',
+            data: { 
+                taskName: 'Demo Task with Retries'
+            },
+        });
 
         console.log('\n✨ All events sent! Watching executions...\n');
     });

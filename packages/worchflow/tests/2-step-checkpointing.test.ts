@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { WorchflowClient, Worcher, createFunction } from '../src';
-import { createTestContext, waitForExecution, sleep, startWorcher, TestContext } from './helpers/test-setup';
+import { createTestContext, waitForExecution, waitForExecutionEvent, sleep, startWorcher, TestContext } from './helpers/test-setup';
 
 type TestEvents = {
   'checkpoint-event': {
@@ -110,8 +110,9 @@ describe('Step Checkpointing Tests', () => {
       console.log(`[TEST] Event sent: ${executionId}`);
 
       console.log('[TEST] Waiting for automatic retry to complete...');
-      const completedExecution = await waitForExecution(ctx.db, executionId, 'completed', 20000);
+      const { status, execution: completedExecution } = await waitForExecutionEvent(worcher, executionId, ctx.db, 20000);
       console.log('[TEST] Retry completed successfully');
+      expect(status).toBe('completed');
 
       // Verify the execution completed after automatic retry
       expect(completedExecution.status).toBe('completed');
@@ -190,12 +191,9 @@ describe('Step Checkpointing Tests', () => {
         data: { steps: 3 },
       });
 
-      console.log('[TEST] Waiting 1s for retry to be queued...');
-      await sleep(1000); // Give time for retry to be queued
-
-      // Wait for automatic retry to complete
       console.log('[TEST] Now waiting for completion...');
-      const completed = await waitForExecution(ctx.db, executionId, 'completed', 15000);
+      const { status, execution: completed } = await waitForExecutionEvent(worcher, executionId, ctx.db, 15000);
+      expect(status).toBe('completed');
 
       expect(completed.result.step1Count).toBe(1); // Step 1 only executed once
       expect(completed.result.step2Count).toBe(2); // Step 2 executed twice (failed first time)
@@ -252,7 +250,8 @@ describe('Step Checkpointing Tests', () => {
         data: { steps: 5 },
       });
 
-      const completed = await waitForExecution(ctx.db, executionId, 'completed', 10000);
+      const { status, execution: completed } = await waitForExecutionEvent(worcher, executionId, ctx.db, 10000);
+      expect(status).toBe('completed');
 
       expect(completed.result.results).toHaveLength(5);
       expect(completed.result.results).toEqual([
@@ -305,7 +304,8 @@ describe('Step Checkpointing Tests', () => {
         data: { value: 'test' },
       });
 
-      await waitForExecution(ctx.db, executionId, 'failed', 10000);
+      const { status } = await waitForExecutionEvent(worcher, executionId, ctx.db, 10000);
+      expect(status).toBe('failed');
 
       console.log('[TEST] Checking Redis for step checkpoints...');
       const redisSteps = await ctx.redis.hgetall(`${ctx.queuePrefix}:steps:${executionId}`);
@@ -321,10 +321,11 @@ describe('Step Checkpointing Tests', () => {
 
       // Verify both have the same step results
       const firstRedisKey = Object.keys(redisSteps)[0];
-      const step1Redis = JSON.parse(redisSteps[firstRedisKey]);
+      const step1RedisWrapped = JSON.parse(redisSteps[firstRedisKey]);
       const step1Mongo = mongoSteps[0];
 
-      expect(step1Redis).toBe('result1'); // Redis stores just the result
+      // Redis stores wrapped result with cache flag
+      expect(step1RedisWrapped).toMatchObject({ cached: true, value: 'result1' });
       expect(step1Mongo.status).toBe('completed');
       expect(step1Mongo.name).toBeTruthy(); // Has a name field
 
@@ -381,10 +382,9 @@ describe('Step Checkpointing Tests', () => {
         data: { value: 'test' },
       });
 
-      // Wait for all automatic retries to complete
       console.log('[TEST] Waiting for all automatic retries to complete...');
-      await sleep(2000); // Give time for retries to queue
-      const completed = await waitForExecution(ctx.db, executionId, 'completed', 20000);
+      const { status, execution: completed } = await waitForExecutionEvent(worcher, executionId, ctx.db, 20000);
+      expect(status).toBe('completed');
       expect(attempts).toBe(3); // Function executed 3 times
       expect(completed.result.attempts).toBe(3);
       expect(completed.attemptCount).toBe(2); // 2 failures before success (attempt count increments on failure)
