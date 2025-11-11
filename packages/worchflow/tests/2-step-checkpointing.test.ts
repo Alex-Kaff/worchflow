@@ -212,7 +212,7 @@ describe('Step Checkpointing Tests', () => {
       const dynamicStepFunction = createFunction<TestEvents, 'resume-event'>(
         { id: 'resume-event' },
         async ({ event, step }) => {
-          const results = [];
+          const results: string[] = [];
           
           for (let i = 0; i < event.data.steps; i++) {
             const result = await step.run(`Dynamic Step ${i}`, async () => {
