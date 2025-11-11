@@ -1,7 +1,7 @@
 {
   "name": "worchflow",
-  "version": "0.0.1",
-  "description": "Worchflow - A TypeScript package",
+  "version": "0.1.0",
+  "description": "Worchflow - A TypeScript workflow orchestration library",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
