@@ -81,6 +81,9 @@ pnpm add worchflow ioredis mongodb
 - Redis server
 - MongoDB server
 
+## Dashboard
+Run the dashboard locally using ``pnpm dev:dashboard`` and then navigating to http://localhost:3000
+
 ## Project Structure
 
 ```
