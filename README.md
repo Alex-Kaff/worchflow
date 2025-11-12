@@ -1,5 +1,6 @@
 # Worchflow
 
+
 **Durable workflow orchestration for TypeScript with Redis and MongoDB**
 
 Worchflow is a TypeScript library for building reliable, step-based workflows with automatic checkpointing, retries, and persistence. Perfect for processing payments, video encoding, data migrations, or any multi-step async task.
@@ -16,6 +17,8 @@ Worchflow is a TypeScript library for building reliable, step-based workflows wi
 - **Event-driven** with real-time execution updates
 - **Multi-worker support** with configurable concurrency
 - **Web dashboard** for monitoring executions
+
+![firefox_KThRGHru0v](https://github.com/user-attachments/assets/28ffdd94-fb43-44ca-801c-2a0c7594da74)
 
 ## Quick Example
 
