@@ -1,5 +1,5 @@
 import type { Db, UpdateFilter } from 'mongodb';
-import type { ExecutionRecord, ExecutionStatus, StepRecord } from '../types';
+import type { ExecutionRecord, ExecutionStatus, StepRecord, ScheduleRecord } from '../types';
 
 export async function saveExecutionToMongo(
   db: Db,
@@ -94,6 +94,57 @@ export async function getOrphanedExecutions(
   return await db.collection<ExecutionRecord>('executions')
     .find({ status: { $in: ['processing', 'retrying'] } })
     .sort({ createdAt: 1 })
+    .toArray();
+}
+
+export async function saveScheduleToMongo(
+  db: Db,
+  schedule: ScheduleRecord
+): Promise<void> {
+  await db.collection<ScheduleRecord>('schedules').insertOne(schedule);
+}
+
+export async function updateScheduleInMongo(
+  db: Db,
+  functionId: string,
+  updates: Partial<{
+    lastTriggered: number;
+    nextRun: number;
+    enabled: boolean;
+    updatedAt: number;
+  }>
+): Promise<void> {
+  const updateDoc: UpdateFilter<ScheduleRecord> = { $set: updates };
+  
+  await db.collection<ScheduleRecord>('schedules').updateOne(
+    { functionId },
+    updateDoc,
+    { upsert: true }
+  );
+}
+
+export async function getScheduleFromMongo(
+  db: Db,
+  functionId: string
+): Promise<ScheduleRecord | null> {
+  return await db.collection<ScheduleRecord>('schedules').findOne({ functionId });
+}
+
+export async function getAllSchedules(
+  db: Db
+): Promise<ScheduleRecord[]> {
+  return await db.collection<ScheduleRecord>('schedules')
+    .find()
+    .sort({ functionId: 1 })
+    .toArray();
+}
+
+export async function getEnabledSchedules(
+  db: Db
+): Promise<ScheduleRecord[]> {
+  return await db.collection<ScheduleRecord>('schedules')
+    .find({ enabled: true })
+    .sort({ functionId: 1 })
     .toArray();
 }
 

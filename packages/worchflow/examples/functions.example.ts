@@ -4,39 +4,6 @@ export type HelloWorldData = {
   email: string;
 };
 
-export type ProcessPaymentData = {
-  amount: number;
-  customerId: string;
-};
-
-export type VideoProcessingData = {
-  videoUrl: string;
-  userId: string;
-};
-
-export type DataMigrationData = {
-  batchSize: number;
-};
-
-export type EmailCampaignData = {
-  campaignId: string;
-  recipientCount: number;
-};
-
-export type ImageResizeData = {
-  imageUrl: string;
-  sizes: number[];
-};
-
-export type WebhookRetryData = {
-  webhookUrl: string;
-  payload: Record<string, any>;
-};
-
-export type DataValidationData = {
-  records: Array<Record<string, any>>;
-};
-
 export type ReportGenerationData = {
   reportType: string;
   dateRange: { start: string; end: string };
@@ -46,36 +13,22 @@ export type MultiStepRetryData = {
   taskName: string;
 };
 
+export type PingData = {
+  message: string;
+};
+
 export type Events = {
   'hello-world': {
     data: HelloWorldData;
-  };
-  'process-payment': {
-    data: ProcessPaymentData;
-  };
-  'video-processing': {
-    data: VideoProcessingData;
-  };
-  'data-migration': {
-    data: DataMigrationData;
-  };
-  'email-campaign': {
-    data: EmailCampaignData;
-  };
-  'image-resize': {
-    data: ImageResizeData;
-  };
-  'webhook-retry': {
-    data: WebhookRetryData;
-  };
-  'data-validation': {
-    data: DataValidationData;
   };
   'report-generation': {
     data: ReportGenerationData;
   };
   'multi-step-retry': {
     data: MultiStepRetryData;
+  };
+  'ping': {
+    data: PingData;
   };
 };
 
@@ -95,234 +48,6 @@ export const helloWorld = createFunction<Events, 'hello-world'>(
     });
 
     return { message: `Hello ${user.name}!` };
-  }
-);
-
-export const processPayment = createFunction<Events, 'process-payment'>(
-  { id: 'process-payment' },
-  async ({ event, step }) => {
-    const payment = await step.run('Validate payment details', async () => {
-      await sleep(400);
-      return { amount: event.data.amount, currency: 'USD' };
-    });
-
-    const result = await step.run('Charge payment provider', async () => {
-      await sleep(800);
-      return { success: true, transactionId: 'txn_' + Date.now() };
-    });
-
-    await step.run('Send receipt email', async () => {
-      await sleep(300);
-      console.log('Receipt sent');
-    });
-
-    return result;
-  }
-);
-
-export const videoProcessing = createFunction<Events, 'video-processing'>(
-  { id: 'video-processing' },
-  async ({ event, step }) => {
-    await step.run('Download video', async () => {
-      console.log(`Downloading video from ${event.data.videoUrl}`);
-      await sleep(2000);
-    });
-
-    await step.run('Extract audio', async () => {
-      console.log('Extracting audio track...');
-      await sleep(3000);
-    });
-
-    await step.run('Generate thumbnails', async () => {
-      console.log('Generating video thumbnails...');
-      await sleep(2500);
-    });
-
-    const transcoded = await step.run('Transcode video', async () => {
-      console.log('Transcoding video to multiple formats...');
-      await sleep(5000);
-      return ['720p', '1080p', '4K'];
-    });
-
-    await step.run('Upload to CDN', async () => {
-      console.log('Uploading processed video to CDN...');
-      await sleep(3000);
-    });
-
-    return { 
-      success: true, 
-      formats: transcoded,
-      processingTime: '15.5s'
-    };
-  }
-);
-
-export const dataMigration = createFunction<Events, 'data-migration'>(
-  { id: 'data-migration' },
-  async ({ event, step }) => {
-    let totalMigrated = 0;
-    const batches = 5;
-
-    for (let i = 0; i < batches; i++) {
-      const batch = await step.run(`Migrate batch ${i + 1}`, async () => {
-        await sleep(1000);
-        const migrated = event.data.batchSize;
-        console.log(`Migrated ${migrated} records in batch ${i + 1}`);
-        return migrated;
-      });
-      totalMigrated += batch;
-    }
-
-    await step.run('Verify migration', async () => {
-      await sleep(1500);
-      console.log('Verifying all migrated data...');
-    });
-
-    return { 
-      totalRecords: totalMigrated,
-      batches,
-      status: 'completed'
-    };
-  }
-);
-
-export const emailCampaign = createFunction<Events, 'email-campaign'>(
-  { id: 'email-campaign' },
-  async ({ event, step }) => {
-    const recipients = await step.run('Load recipient list', async () => {
-      await sleep(800);
-      return event.data.recipientCount;
-    });
-
-    const template = await step.run('Generate email template', async () => {
-      await sleep(600);
-      return { subject: 'Campaign Update', body: 'Hello!' };
-    });
-
-    let sent = 0;
-    const batches = Math.ceil(recipients / 100);
-
-    for (let i = 0; i < batches; i++) {
-      const batchSent = await step.run(`Send batch ${i + 1}`, async () => {
-        await sleep(500);
-        const count = Math.min(100, recipients - sent);
-        console.log(`Sent ${count} emails in batch ${i + 1}`);
-        return count;
-      });
-      sent += batchSent;
-    }
-
-    return { 
-      campaignId: event.data.campaignId,
-      sent,
-      template 
-    };
-  }
-);
-
-export const imageResize = createFunction<Events, 'image-resize'>(
-  { id: 'image-resize' },
-  async ({ event, step }) => {
-    await step.run('Download original image', async () => {
-      console.log(`Downloading image from ${event.data.imageUrl}`);
-      await sleep(1000);
-    });
-
-    const resizedImages: string[] = [];
-
-    for (const size of event.data.sizes) {
-      const resized = await step.run(`Resize to ${size}px`, async () => {
-        await sleep(700);
-        console.log(`Resized image to ${size}px`);
-        return `${event.data.imageUrl}_${size}px.jpg`;
-      });
-      resizedImages.push(resized);
-    }
-
-    await step.run('Upload resized images', async () => {
-      await sleep(1200);
-      console.log('Uploaded all resized images');
-    });
-
-    return { 
-      original: event.data.imageUrl,
-      resized: resizedImages 
-    };
-  }
-);
-
-export const webhookRetry = createFunction<Events, 'webhook-retry'>(
-  { id: 'webhook-retry' },
-  async ({ event, step }) => {
-    const maxRetries = 3;
-    let attempt = 0;
-
-    const result = await step.run('Send webhook with retries', async () => {
-      attempt++;
-      
-      if (Math.random() < 0.6 && attempt < maxRetries) {
-        console.log(`Webhook attempt ${attempt} failed, retrying...`);
-        throw new Error('Webhook delivery failed');
-      }
-      
-      console.log(`Webhook delivered successfully on attempt ${attempt}`);
-      return { 
-        delivered: true, 
-        attempts: attempt,
-        timestamp: new Date().toISOString()
-      };
-    });
-
-    await step.run('Log webhook result', async () => {
-      await sleep(200);
-      console.log('Webhook result logged');
-    });
-
-    return result;
-  }
-);
-
-export const dataValidation = createFunction<Events, 'data-validation'>(
-  { id: 'data-validation' },
-  async ({ event, step }) => {
-    const validRecords: Array<Record<string, any>> = [];
-    const invalidRecords: Array<{ record: Record<string, any>; error?: string }> = [];
-
-    for (let i = 0; i < event.data.records.length; i++) {
-      const record = event.data.records[i];
-      
-      const validation = await step.run(`Validate record ${i + 1}`, async () => {
-        await sleep(300);
-        
-        const isValid = Math.random() > 0.3;
-        
-        if (isValid) {
-          console.log(`Record ${i + 1} is valid`);
-          return { valid: true, record };
-        } else {
-          console.log(`Record ${i + 1} failed validation`);
-          return { valid: false, record, error: 'Invalid format' };
-        }
-      });
-
-      if (validation.valid) {
-        validRecords.push(validation.record);
-      } else {
-        invalidRecords.push({ record: validation.record, error: validation.error });
-      }
-    }
-
-    await step.run('Generate validation report', async () => {
-      await sleep(500);
-      console.log('Validation report generated');
-    });
-
-    return {
-      total: event.data.records.length,
-      valid: validRecords.length,
-      invalid: invalidRecords.length,
-      invalidRecords
-    };
   }
 );
 
@@ -394,8 +119,7 @@ export const multiStepRetry = createFunction<Events, 'multi-step-retry'>(
       } else {
         throw new Error(`Failed on attempt ${retryCount ?? 0}`);
       }
-    }
-  );
+    });
 
     await step.run('Final step', async () => {
       console.log('Executing final step...');
@@ -408,5 +132,16 @@ export const multiStepRetry = createFunction<Events, 'multi-step-retry'>(
       totalAttempts: result.attempts,
       status: 'completed'
     };
+  }
+);
+
+
+export const ping = createFunction<Events, 'ping'>(
+  { id: 'ping', cron: '*/10 * * * * *' }, // Run every 10 seconds
+  async ({ step }) => {
+    await step.run('Ping', async () => {
+      console.log('Ping received');
+      return { message: 'Pong' };
+    });
   }
 );

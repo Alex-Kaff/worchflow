@@ -15,6 +15,8 @@ export class WorkchflowFunction<
   public readonly id: TEventName;
   public readonly retries: number;
   public readonly retryDelay: number;
+  public readonly cron?: string;
+  public readonly config: FunctionConfig<TEventName>;
   private handler: FunctionHandler<ExtractEventData<TEvents, TEventName>, any>;
 
   constructor(
@@ -24,6 +26,8 @@ export class WorkchflowFunction<
     this.id = config.id;
     this.retries = config.retries ?? 0;
     this.retryDelay = config.retryDelay ?? 0;
+    this.cron = config.cron;
+    this.config = config;
     this.handler = handler;
   }
 
@@ -36,6 +40,7 @@ export class WorkchflowFunction<
       id: this.id,
       retries: this.retries,
       retryDelay: this.retryDelay,
+      cron: this.cron,
     };
   }
 }

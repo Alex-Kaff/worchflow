@@ -1,18 +1,12 @@
 import Redis from 'ioredis';
 import { MongoClient } from 'mongodb';
-import { WorchflowClient, Worcher } from '../src';
+import { WorchflowClient, Worcher, WorchflowScheduler } from '../src';
 import { 
     helloWorld, 
-    processPayment, 
-    videoProcessing,
-    dataMigration,
-    emailCampaign,
-    imageResize,
-    webhookRetry,
-    dataValidation,
     reportGeneration,
     multiStepRetry,
-    Events 
+    ping,
+    Events,
 } from './functions.example';
 
 async function main() {
@@ -27,21 +21,27 @@ async function main() {
         db,
     });
 
+    const functions = [
+        helloWorld, 
+        reportGeneration,
+        multiStepRetry,
+        ping
+    ];
     const worcher = new Worcher(
         { redis: redisWorker, db, logging: true },
-        [
-            helloWorld, 
-            processPayment,
-            videoProcessing,
-            dataMigration,
-            emailCampaign,
-            imageResize,
-            webhookRetry,
-            dataValidation,
-            reportGeneration,
-            multiStepRetry
-        ]
+        functions
     );
+
+    const scheduler = new WorchflowScheduler({ 
+        redis: redisClient, 
+        db, 
+        logging: true,
+        leaderTTL: 120,
+        leaderCheckInterval: 45000
+    }, [ping]);
+
+    console.log('📅 Starting scheduler...');
+    scheduler.start().catch(console.error);
 
     worcher.on('ready', async () => {
         console.log('🚀 Worcher ready');
@@ -70,63 +70,6 @@ async function main() {
         await client.send({
             name: 'hello-world',
             data: { email: 'user@example.com' },
-        });
-
-        await client.send({
-            name: 'process-payment',
-            data: { amount: 100, customerId: 'cust_123' },
-        });
-
-        await client.send({
-            name: 'video-processing',
-            data: { 
-                videoUrl: 'https://example.com/video.mp4',
-                userId: 'user_456'
-            },
-        });
-
-        await client.send({
-            name: 'data-migration',
-            data: { batchSize: 1000 },
-        });
-
-        await client.send({
-            name: 'email-campaign',
-            data: { 
-                campaignId: 'camp_789',
-                recipientCount: 350
-            },
-        });
-
-        await client.send({
-            name: 'image-resize',
-            data: { 
-                imageUrl: 'https://example.com/photo.jpg',
-                sizes: [200, 400, 800, 1200]
-            },
-        });
-
-        for (let i = 0; i < 3; i++) {
-            await client.send({
-                name: 'webhook-retry',
-                data: { 
-                    webhookUrl: `https://example.com/webhook-${i}`,
-                    payload: { eventType: 'test', attempt: i }
-                },
-            });
-        }
-
-        await client.send({
-            name: 'data-validation',
-            data: { 
-                records: [
-                    { id: 1, name: 'Alice', email: 'alice@example.com' },
-                    { id: 2, name: 'Bob', email: 'bob@example.com' },
-                    { id: 3, name: 'Charlie', email: 'charlie@example.com' },
-                    { id: 4, name: 'Diana', email: 'diana@example.com' },
-                    { id: 5, name: 'Eve', email: 'eve@example.com' },
-                ]
-            },
         });
 
         for (let i = 0; i < 2; i++) {

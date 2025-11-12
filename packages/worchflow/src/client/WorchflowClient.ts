@@ -86,4 +86,8 @@ export class WorchflowClient<TEvents extends EventSchemaShape = EventSchemaShape
     ]);
     await pushToQueue(this.config.redis, this.queuePrefix, executionId);
   }
+
+  getIsReady(): boolean {
+    return this.isReady;
+  }
 }

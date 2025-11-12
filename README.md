@@ -12,6 +12,7 @@ Worchflow is a TypeScript library for building reliable, step-based workflows wi
 - **Redis queue** for fast job distribution
 - **MongoDB persistence** for execution history
 - **Built-in retries** with configurable backoff
+- **Cron scheduling** with leader election and missed execution detection
 - **Event-driven** with real-time execution updates
 - **Multi-worker support** with configurable concurrency
 - **Web dashboard** for monitoring executions
@@ -66,6 +67,21 @@ await client.send({
 // Process workflows
 const worcher = new Worcher({ redis, db, concurrency: 5 }, [processPayment]);
 await worcher.start();
+
+// Optional: Schedule workflows with cron
+import { WorchflowScheduler } from 'worchflow';
+
+const dailyCleanup = createFunction<Events, 'daily-cleanup'>(
+  { id: 'daily-cleanup', cron: '0 0 * * *' }, // Run daily at midnight
+  async ({ step }) => {
+    await step.run('Clean up old data', async () => {
+      // cleanup logic
+    });
+  }
+);
+
+const scheduler = new WorchflowScheduler({ redis, db }, [dailyCleanup]);
+await scheduler.start(); // Automatically detects and runs missed executions
 ```
 
 ## Installation
@@ -132,11 +148,23 @@ pnpm build
   concurrency?: number   // worker only, default: 1
 }
 
+// Scheduler Config
+{
+  redis: Redis,
+  db: Db,
+  queuePrefix?: string,
+  logging?: boolean,
+  leaderElection?: boolean,      // default: true
+  leaderTTL?: number,            // default: 60
+  leaderCheckInterval?: number   // default: 30000
+}
+
 // Function Config
 {
   id: string,            // unique function identifier
   retries?: number,      // default: 0
-  retryDelay?: number    // delay in ms, default: 1000
+  retryDelay?: number,   // delay in ms, default: 1000
+  cron?: string          // cron expression (e.g., '0 * * * *' for hourly)
 }
 ```
 
@@ -145,10 +173,18 @@ pnpm build
 Listen to workflow lifecycle events:
 
 ```typescript
+// Worker events
 worcher.on('execution:start', ({ executionId, eventName }) => {});
 worcher.on('execution:complete', ({ executionId, result }) => {});
 worcher.on('execution:failed', ({ executionId, error, willRetry }) => {});
 worcher.on('step:complete', ({ executionId, stepName }) => {});
+
+// Scheduler events
+scheduler.on('ready', () => {});
+scheduler.on('leader:acquired', () => {});
+scheduler.on('leader:lost', () => {});
+scheduler.on('schedule:triggered', ({ functionId, executionId, isMissed }) => {});
+scheduler.on('schedule:missed', ({ functionId, lastExecutionTime, triggeredAt }) => {});
 ```
 
 ## Documentation

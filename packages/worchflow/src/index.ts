@@ -1,6 +1,7 @@
 export { WorchflowClient } from './client/WorchflowClient';
 export { Worcher } from './worker/Worcher';
 export { WorkchflowFunction, createFunction } from './core/WorkchflowFunction';
+export { WorchflowScheduler } from './scheduler/WorchflowScheduler';
 export { ensureIndexes } from './utils/indexes';
 export {
   saveExecutionToRedis,
@@ -22,10 +23,23 @@ export {
   getExecutionsByEventName,
   getStepsForExecution,
   getOrphanedExecutions,
+  saveScheduleToMongo,
+  updateScheduleInMongo,
+  getScheduleFromMongo,
+  getAllSchedules,
+  getEnabledSchedules,
 } from './utils/mongo';
+export {
+  validateCronExpression,
+  getNextCronRun,
+  parseCronExpression,
+  shouldHaveRun,
+} from './utils/cron';
 
 export type {
   BaseWorchflowConfig,
+  CronExecutionRecord,
+  CronParseResult,
   EventPayload,
   EventSchemaShape,
   ExecutionData,
@@ -34,6 +48,12 @@ export type {
   ExtractEventData,
   FunctionConfig,
   FunctionContext,
+  ScheduledFunctionInfo,
+  ScheduleMissedEvent,
+  ScheduleRecord,
+  ScheduleRegisteredEvent,
+  ScheduleTriggeredEvent,
+  SchedulerConfig,
   SendEventPayload,
   StepContext,
   StepRecord,

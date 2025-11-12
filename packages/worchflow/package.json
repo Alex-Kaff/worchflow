@@ -1,6 +1,6 @@
 {
   "name": "worchflow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Worchflow - A TypeScript workflow orchestration library",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,7 +24,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@types/node": "^20.10.0"
+    "@types/node": "^20.10.0",
+    "cron": "^3.1.0"
   },
   "peerDependencies": {
     "ioredis": "^5.0.0",

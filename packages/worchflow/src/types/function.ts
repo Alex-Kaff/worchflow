@@ -18,6 +18,7 @@ export interface FunctionConfig<TEventName extends string = string> {
   id: TEventName;
   retries?: number; // Number of retry attempts on failure (default: 0 = no retries)
   retryDelay?: number; // Delay in ms before retry (default: 0 = immediate)
+  cron?: string; // Cron expression for scheduled execution (e.g., '0 * * * *' for hourly)
 }
 
 export type FunctionHandler<TData = any, TReturn = any> = (
@@ -28,6 +29,7 @@ export interface WorkchflowFunctionMetadata<TEventName extends string = string> 
   id: TEventName;
   retries?: number;
   retryDelay?: number;
+  cron?: string;
 }
 
 export interface WorkchflowFunction<

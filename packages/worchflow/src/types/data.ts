@@ -35,3 +35,13 @@ export interface QueueItem {
   executionId: string;
 }
 
+export interface ScheduleRecord {
+  functionId: string;
+  cronExpression: string;
+  lastTriggered?: number;
+  nextRun: number;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+

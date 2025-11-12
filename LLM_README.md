@@ -29,6 +29,15 @@ await client.send({ name: 'event-name', data: {...} });
 
 const worcher = new Worcher({ redis, db, concurrency: 5, logging: true }, [functions]);
 await worcher.start();
+
+// Optional: Schedule functions with cron
+createFunction<Events, 'scheduled-event'>(
+  { id: 'scheduled-event', cron: '0 * * * *' }, // Hourly
+  async ({ event, step }) => { ... }
+)
+
+const scheduler = new WorchflowScheduler<Events>({ redis, db, logging: true }, [cronFunctions]);
+await scheduler.start();
 ```
 
 ### Type System & Data Structures
@@ -55,6 +64,7 @@ await worcher.start();
 
 ### Config
 ```typescript
+// Client & Worker Config
 {
   redis: Redis,          // ioredis instance
   db: Db,                // MongoDB database
@@ -62,12 +72,32 @@ await worcher.start();
   logging?: boolean,     // default: false
   concurrency?: number   // worker only, default: 1
 }
+
+// Scheduler Config (extends Client Config)
+{
+  redis: Redis,
+  db: Db,
+  queuePrefix?: string,
+  logging?: boolean,
+  leaderElection?: boolean,      // default: true
+  leaderTTL?: number,            // default: 60 (seconds)
+  leaderCheckInterval?: number   // default: 30000 (ms)
+}
+
+// Function Config
+{
+  id: string,
+  retries?: number,
+  retryDelay?: number,
+  cron?: string            // NEW: cron expression (e.g., '0 * * * *')
+}
 ```
 
 ### Architecture
 - Client: sends events → Redis queue + MongoDB
 - Worker: BLPOP from queue → executes functions with step checkpointing
 - Step: Redis-first cache (HGET/HSET) + MongoDB persistence
+- Scheduler (optional): Cron-based event triggers with leader election
 - Each execution gets dedicated Redis connection (prevents BLPOP blocking)
 - **MongoDB Indexes**: Automatically created on initialization for optimal query performance
 - **DRY Principle**: All Redis/MongoDB operations abstracted into typed helper functions
@@ -126,6 +156,8 @@ await worcher.start();
 ### MongoDB Collections
 - `executions`: { id, eventName, eventData, status, result, error, createdAt, updatedAt, attemptCount }
 - `steps`: { executionId, stepId, name, status, result, timestamp }
+- `cron_executions`: { functionId, lastExecutionTime, nextScheduledTime, cronExpression, updatedAt } - used by scheduler for missed execution detection
+- `schedules` (optional): { functionId, cronExpression, lastTriggered, nextRun, enabled, createdAt, updatedAt } - for custom schedule tracking
 
 ### Internal Implementation Patterns
 
@@ -176,6 +208,285 @@ await updateExecutionInRedis(redis, prefix, id, {
 - Manual retry via `client.retry(executionId)` resets attempt count
 - Status during retries: `'retrying'` (auto) or `'failed'` (exceeded limit)
 
+## Scheduler (`WorchflowScheduler`)
+
+**Cron-based workflow scheduling** - automatically trigger workflows on a schedule.
+
+### Overview
+- Add `cron` option to function config to schedule automatic execution
+- Supports standard cron expressions (minute, hour, day, month, weekday)
+- Leader election ensures only one instance triggers scheduled events (multi-worker safe)
+- **Missed execution detection**: Automatically detects and runs missed scheduled executions on startup
+- Scheduled executions flow through the same Client → Worker pipeline as manual events
+- All retry, checkpointing, and monitoring features work for scheduled executions
+
+### Usage
+```typescript
+const cleanupJob = createFunction<Events, 'cleanup'>(
+  { 
+    id: 'cleanup',
+    cron: '0 0 * * *', // Daily at midnight
+    retries: 2 
+  },
+  async ({ step }) => {
+    await step.run('Delete old records', async () => { ... });
+    return { deleted: count };
+  }
+);
+
+const scheduler = new WorchflowScheduler<Events>(
+  { redis, db, logging: true },
+  [cleanupJob, otherCronFunctions]
+);
+
+await scheduler.start();
+```
+
+### Cron Expression Format
+Standard cron syntax (5 or 6 fields):
+```
+Standard 5-field (minute precision):
+┌─────────── minute (0 - 59)
+│ ┌───────── hour (0 - 23)
+│ │ ┌─────── day of month (1 - 31)
+│ │ │ ┌───── month (1 - 12)
+│ │ │ │ ┌─── day of week (0 - 6) (Sunday=0)
+│ │ │ │ │
+* * * * *
+
+Extended 6-field (second precision):
+┌────────────── second (0 - 59)
+│ ┌──────────── minute (0 - 59)
+│ │ ┌────────── hour (0 - 23)
+│ │ │ ┌──────── day of month (1 - 31)
+│ │ │ │ ┌────── month (1 - 12)
+│ │ │ │ │ ┌──── day of week (0 - 6) (Sunday=0)
+│ │ │ │ │ │
+* * * * * *
+```
+
+**Common Examples:**
+- `'0 * * * *'` - Every hour (at minute 0)
+- `'*/5 * * * *'` - Every 5 minutes
+- `'0 0 * * *'` - Daily at midnight
+- `'0 9 * * 1-5'` - Weekdays at 9 AM
+- `'0 */6 * * *'` - Every 6 hours
+- `'*/10 * * * * *'` - Every 10 seconds (6-field format)
+
+### Leader Election
+**Problem:** In multi-worker deployments, multiple instances shouldn't trigger the same cron job simultaneously.
+
+**Solution:** Automatic leader election using Redis locks:
+- Scheduler uses `SETNX` with TTL to acquire leadership
+- Only the leader instance starts cron jobs and triggers executions
+- Leadership is checked every 30s (configurable via `leaderCheckInterval`)
+- If leader crashes, lock expires (TTL) and another instance takes over
+- Disable with `leaderElection: false` for single-instance deployments
+
+### Scheduler Config Options
+```typescript
+{
+  redis: Redis,                  // ioredis instance
+  db: Db,                        // MongoDB database
+  queuePrefix?: string,          // default: 'worchflow'
+  logging?: boolean,             // default: false
+  leaderElection?: boolean,      // default: true (enable leader election)
+  leaderTTL?: number,            // default: 60 (leader lock TTL in seconds)
+  leaderCheckInterval?: number   // default: 30000 (leadership check interval in ms)
+}
+```
+
+### Scheduler Events
+```typescript
+scheduler.on('ready', () => {});
+scheduler.on('leader:acquired', () => {});
+scheduler.on('leader:lost', () => {});
+scheduler.on('schedule:registered', ({ functionId, cron, nextRun }) => {});
+scheduler.on('schedule:triggered', ({ functionId, executionId, timestamp, isMissed }) => {});
+scheduler.on('schedule:missed', ({ functionId, lastExecutionTime, triggeredAt }) => {});
+scheduler.on('stopped', () => {});
+scheduler.on('error', (error) => {});
+```
+
+### Scheduler Methods
+```typescript
+await scheduler.start();  // Start scheduler and begin leader election
+await scheduler.stop();   // Stop all cron jobs and release leadership
+
+scheduler.getScheduledFunctions();  // Returns: Array<{ id, cron, nextRun: Date }>
+scheduler.isLeaderNode();           // Returns: boolean (true if this instance is leader)
+```
+
+### Architecture
+1. **Scheduler** (leader instance) → triggers cron jobs → sends events via `WorchflowClient.send()`
+2. **Client** → writes to Redis queue + MongoDB
+3. **Worker(s)** → process executions (all workers can handle scheduled events)
+
+**Key Points:**
+- Scheduler is separate from Worker - can run on same or different instances
+- Scheduled events have empty `data: {}` by default (functions must not require event data)
+- Cron jobs are NOT stored in MongoDB - they're defined in function config
+- Optional: Use `ScheduleRecord` MongoDB helpers to track trigger history
+- Redis key: `{prefix}:scheduler:leader` (leader election lock)
+
+### Missed Execution Detection
+
+The scheduler automatically detects and runs missed scheduled executions on startup. This ensures reliability even after downtime.
+
+**How It Works:**
+1. On startup, scheduler queries `cron_executions` collection for last execution times
+2. For each scheduled function, uses `shouldHaveRun()` to check if it should have run since last execution
+3. If missed, immediately triggers execution and emits `schedule:missed` event
+4. Records new execution time in `cron_executions` collection
+
+**Example Scenario:**
+- Scheduled function: `'0 * * * *'` (hourly)
+- Last execution: `2025-01-01 10:00:00`
+- Scheduler starts: `2025-01-01 12:30:00`
+- Result: Missed execution detected → triggers immediately
+
+**Use Cases:**
+- Server restarts or deployments during scheduled execution windows
+- Scheduler crashes or leader node failures
+- Kubernetes pod rescheduling
+
+**Configuration:**
+Missed execution detection is automatic and always enabled. The feature uses the minimum interval from the cron expression to determine if an execution was missed.
+
+### Helper Functions (Cron Utilities)
+```typescript
+// Validation
+validateCronExpression(expression: string) → boolean
+
+// Get next run time
+getNextCronRun(expression: string) → Date
+
+// Parse and validate
+parseCronExpression(expression: string) → { isValid, error?, nextRun? }
+
+// Check if cron should have run between two times (for missed execution detection)
+shouldHaveRun(expression: string, lastRunTime: Date, currentTime?: Date, debug?: boolean) → boolean
+```
+
+### MongoDB Collections
+
+The scheduler automatically uses the `cron_executions` collection for missed execution detection:
+```typescript
+CronExecutionRecord: {
+  functionId: string,
+  lastExecutionTime: Date,
+  nextScheduledTime: Date,
+  cronExpression: string,
+  updatedAt: Date
+}
+```
+
+This collection is **automatically managed** by the scheduler - you don't need to interact with it directly.
+
+#### Optional Custom Schedule Tracking
+
+The `schedules` collection and helpers are available for custom schedule tracking implementations:
+```typescript
+ScheduleRecord: {
+  functionId: string,
+  cronExpression: string,
+  lastTriggered?: number,
+  nextRun: number,
+  enabled: boolean,
+  createdAt: number,
+  updatedAt: number
+}
+
+// Helper functions (optional - for custom implementations)
+saveScheduleToMongo(db, schedule)
+updateScheduleInMongo(db, functionId, updates)
+getScheduleFromMongo(db, functionId)
+getAllSchedules(db)
+getEnabledSchedules(db)
+```
+
+**Note:** The `schedules` collection is separate from `cron_executions` and not used by the scheduler itself. Use these helpers if you want to build custom schedule management features.
+
+### Deployment Patterns
+
+**Pattern 1: Single Instance (Scheduler + Worker)**
+```typescript
+const scheduler = new WorchflowScheduler({ redis, db }, cronFunctions);
+const worcher = new Worcher({ redis, db, concurrency: 5 }, cronFunctions);
+await scheduler.start();
+await worcher.start();
+```
+
+**Pattern 2: Dedicated Scheduler + Multiple Workers**
+```typescript
+// Instance 1: Dedicated scheduler
+const scheduler = new WorchflowScheduler({ redis, db }, cronFunctions);
+await scheduler.start();
+
+// Instances 2-N: Workers only
+const worcher = new Worcher({ redis, db, concurrency: 10 }, cronFunctions);
+await worcher.start();
+```
+
+**Pattern 3: Multi-Instance with Leader Election (Recommended)**
+```typescript
+// Run on ALL instances - leader election ensures only one schedules
+const scheduler = new WorchflowScheduler(
+  { redis, db, leaderElection: true },
+  cronFunctions
+);
+const worcher = new Worcher({ redis, db, concurrency: 5 }, cronFunctions);
+await scheduler.start();
+await worcher.start();
+```
+
+### Best Practices
+1. **Separate Redis connections:** Use different Redis clients for scheduler, worker, and client
+2. **Enable leader election:** Always use `leaderElection: true` in multi-instance deployments
+3. **Monitor leadership:** Listen to `leader:acquired` and `leader:lost` events for observability
+4. **Graceful shutdown:** Always call `scheduler.stop()` before process exit
+5. **Empty data payloads:** Cron functions should not require event data (data will be `{}`)
+6. **Combine with retries:** Set `retries` on cron functions for reliability
+7. **Use descriptive IDs:** Function IDs should clearly indicate they're scheduled (e.g., `'cleanup-daily'`)
+8. **Monitor missed executions:** Listen to `schedule:missed` events to track downtime-related executions
+
+### Common Patterns
+
+**Cleanup Jobs:**
+```typescript
+createFunction<Events, 'cleanup-old-data'>(
+  { id: 'cleanup-old-data', cron: '0 0 * * *', retries: 2 },
+  async ({ step }) => {
+    const deleted = await step.run('Delete records', async () => { ... });
+    return { deleted };
+  }
+)
+```
+
+**Reports:**
+```typescript
+createFunction<Events, 'daily-report'>(
+  { id: 'daily-report', cron: '0 9 * * 1-5', retries: 1 },
+  async ({ step }) => {
+    const data = await step.run('Collect metrics', async () => { ... });
+    await step.run('Send email', async () => { ... });
+  }
+)
+```
+
+**Health Checks:**
+```typescript
+createFunction<Events, 'health-check'>(
+  { id: 'health-check', cron: '*/5 * * * *' },
+  async ({ step }) => {
+    const status = await step.run('Check services', async () => { ... });
+    if (status.hasIssues) {
+      await step.run('Alert on-call', async () => { ... });
+    }
+  }
+)
+```
+
 ## Dashboard (`apps/dashboard`)
 
 Next.js app at `localhost:3000`:
@@ -207,6 +518,10 @@ pnpm docker:down             # Stop and remove containers
 pnpm build                   # Build all packages
 pnpm example                 # Run worchflow example (packages/worchflow)
 pnpm dev:dashboard           # Start dashboard (localhost:3000)
+
+# Examples (run from packages/worchflow)
+tsx examples/usage.example.ts      # Full example with client, worker, and scheduler
+tsx examples/functions.example.ts  # Function definitions (includes cron-scheduled function)
 ```
 
 ## Code Organization & Best Practices
@@ -306,10 +621,14 @@ updateExecutionInRedis(redis, prefix, id, {
 **Why**: Prevents race conditions where different connections have inconsistent views of execution state during updates.
 
 ## Dev Notes
-- Separate Redis clients for Client/Worker to avoid BLPOP blocking
+- Separate Redis clients for Client/Worker/Scheduler to avoid BLPOP blocking
 - Worker creates dedicated Redis connection per execution for steps
+- Scheduler uses Redis SETNX for leader election in multi-instance deployments
+- Scheduler automatically detects missed executions using `cron_executions` collection
+- Scheduler supports both 5-field (minute precision) and 6-field (second precision) cron expressions
 - Steps cached by MD5 hash of title (stepId = hash(title))
 - Multi-worker safe via atomic BLPOP
+- Cron expressions validated on scheduler initialization
 - Dashboard stops polling completed/failed executions
 - All database operations go through typed helper functions
 - Type conversion (strings ↔ numbers) handled automatically by helpers
@@ -416,6 +735,10 @@ ExecutionData: { eventName?: string, attemptCount?: string, ... }
 // App/MongoDB format (typed)
 ExecutionRecord: { eventName: string, attemptCount: number, status: ExecutionStatus, ... }
 StepRecord: { executionId: string, stepId: string, result: any, ... }
+
+// Scheduler types
+CronExecutionRecord: { functionId: string, lastExecutionTime: Date, nextScheduledTime: Date, ... }
+ScheduleRecord: { functionId: string, cronExpression: string, enabled: boolean, ... } // optional, for custom implementations
 ```
 
 ### Helper Function Quick Lookup
@@ -443,6 +766,21 @@ getExecutionsByStatus(db, status, limit) → ExecutionRecord[]
 // Steps
 saveStepToMongo(db, step: StepRecord)
 getStepsForExecution(db, execId) → StepRecord[]
+
+// Schedules (optional - for custom implementations)
+saveScheduleToMongo(db, schedule: ScheduleRecord)
+updateScheduleInMongo(db, functionId, updates)
+getScheduleFromMongo(db, functionId) → ScheduleRecord | null
+getAllSchedules(db) → ScheduleRecord[]
+getEnabledSchedules(db) → ScheduleRecord[]
+```
+
+**Cron Utilities:**
+```typescript
+validateCronExpression(expression: string) → boolean
+getNextCronRun(expression: string) → Date
+parseCronExpression(expression: string) → CronParseResult
+shouldHaveRun(expression: string, lastRunTime: Date, currentTime?: Date) → boolean
 ```
 
 ### Key Architecture Decisions
@@ -453,3 +791,4 @@ getStepsForExecution(db, execId) → StepRecord[]
 5. **No `any` types**: Use `unknown` for dynamic, proper types everywhere else
 6. **Connection isolation**: Separate Redis per worker thread + per execution
 7. **Atomic operations**: BLPOP ensures single processing per execution
+8. **Scheduler reliability**: Automatic missed execution detection + leader election
